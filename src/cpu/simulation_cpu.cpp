@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <atomic> 
+#include <mutex>
 #include <random>
 
 // TBB Includes
@@ -122,6 +123,8 @@ void traverse_bvh(
 }
 
 void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir) {
+    std::vector<RayPath> debug_paths;
+    std::mutex debug_mutex; // because CPU is multi-threaded (TBB)
     int N = params.num_rays;
     int ir_len = 44100; // 1 second
     ir.resize(ir_len, 0.0f);
@@ -171,6 +174,12 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
 
             float dist_traveled = 0.0f;
             float energy = 1.0f;
+
+            // Only record the first 100 rays to save memory/sanity
+            bool record_debug = params.debug_rays && (i < 100); 
+            RayPath current_path;
+
+            if (record_debug) current_path.push_back(px);
 
             for (int bounce = 0; bounce < 50; ++bounce) {
                 float min_dist = 1e20f;
@@ -251,6 +260,7 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                 //  listener hit?
                 float3 to_l = params.listener_pos - px;
                 float t_proj = dot(to_l, dx);
+
                 
                 // if listener is in front of us and closer than the wall
                 if (t_proj > 0 && t_proj < min_dist) {
@@ -268,6 +278,11 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                 if (min_dist >= 1e19f) {
                     // if (i == 0 && bounce == 0) printf("[Ray 0] Missed Mesh completely.\n");
                     break;
+                }
+
+                if (record_debug) {
+                    float3 hit_point = px + dx * min_dist;
+                    current_path.push_back(hit_point);
                 }
 
                 float rng_trans = rand_float();
@@ -312,6 +327,11 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                     energy *= (1.0f - params.material.absorption);
                 }
 
+                if (record_debug) {
+                    std::lock_guard<std::mutex> lock(debug_mutex);
+                    debug_paths.push_back(current_path);
+                }
+
                 if (energy < 0.001f) break;
             }
         }
@@ -327,5 +347,10 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
         for(int i=0; i<ir_len; ++i) {
             ir[i] += local_buffer[i];
         }
+    }
+    if (params.debug_rays)
+    {
+        std::cout << "Saving debug rays..." << std::endl;
+        save_rays_to_obj("debug_rays.obj", debug_paths);
     }
 }

@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <string>
+#include "debug.h"
 #include "cuda_math.h"
 #include "mesh_loader.h"
 
@@ -24,6 +25,7 @@ struct SimulationParams {
     std::string mesh_path;
     
     MaterialParams material;
+    bool debug_rays = false;
 };
 
 // Main Entry Point (Dispatcher)

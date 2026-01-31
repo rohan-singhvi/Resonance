@@ -21,6 +21,7 @@ void print_usage() {
     std::cout << "  --scattering <0-1> Wall roughness (0=Mirror, 1=Diffuse)\n";
     std::cout << "  --trans <0-1>      Transmission (0=Opaque, 1=Transparent)\n";
     std::cout << "  --thick <meters>   Wall thickness (default 0.1)\n";
+    std::cout << "  --debug            Outputs a debug OBJ file to visualize rays\n";
 }
 
 float3 parse_dims(const char* arg) {
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--scattering") == 0 && i + 1 < argc) params.material.scattering = atof(argv[++i]);
         else if (strcmp(argv[i], "--trans") == 0 && i + 1 < argc) params.material.transmission = atof(argv[++i]);
         else if (strcmp(argv[i], "--thick") == 0 && i + 1 < argc) params.material.thickness = atof(argv[++i]);
+        else if (strcmp(argv[i], "--debug") == 0) params.debug_rays = true;
         else if (strcmp(argv[i], "--help") == 0) { print_usage(); return 0; }
     }
 
