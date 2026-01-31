@@ -7,6 +7,45 @@
 #define LISTENER_RADIUS 0.5f
 #define MAX_BOUNCES 50
 
+__device__ bool intersect_aabb(
+    const float3& ray_origin, const float3& ray_inv_dir, 
+    const float3& box_min, const float3& box_max, 
+    float& t_min_out
+) {
+    float tmin = -1e20f;
+    float tmax = 1e20f;
+
+    // X-Axis
+    {
+        float t1 = (box_min.x - ray_origin.x) * ray_inv_dir.x;
+        float t2 = (box_max.x - ray_origin.x) * ray_inv_dir.x;
+        tmin = fmaxf(tmin, fminf(t1, t2));
+        tmax = fminf(tmax, fmaxf(t1, t2));
+    }
+
+    // Y-Axis
+    {
+        float t1 = (box_min.y - ray_origin.y) * ray_inv_dir.y;
+        float t2 = (box_max.y - ray_origin.y) * ray_inv_dir.y;
+        tmin = fmaxf(tmin, fminf(t1, t2));
+        tmax = fminf(tmax, fmaxf(t1, t2));
+    }
+
+    // Z-Axis
+    {
+        float t1 = (box_min.z - ray_origin.z) * ray_inv_dir.z;
+        float t2 = (box_max.z - ray_origin.z) * ray_inv_dir.z;
+        tmin = fmaxf(tmin, fminf(t1, t2));
+        tmax = fminf(tmax, fmaxf(t1, t2));
+    }
+
+    if (tmax >= tmin && tmax > 0.0f) {
+        t_min_out = tmin;
+        return true;
+    }
+    return false;
+}
+
 // rand num gen (wang hash)
 // statistically decent for ray tracing visuals/acoustics
 __device__ float rand_gpu(unsigned int& seed) {
@@ -115,7 +154,8 @@ __global__ void ray_trace_kernel(
     int ir_length,
     MaterialParams mat,
     // mesh data
-    float3* d_v0, float3* d_v1, float3* d_v2, float3* d_normals, int num_triangles
+    float3* d_v0, float3* d_v1, float3* d_v2, float3* d_normals, int num_triangles,
+    BVHNode* d_bvh_nodes
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int seed = idx * 1973 + 9277;
@@ -173,14 +213,50 @@ __global__ void ray_trace_kernel(
         }
         //  mesh 
         else if (room_type == MESH) {
-            for(int i = 0; i < num_triangles; ++i) {
-                float3 v0 = d_v0[i];
-                float3 v1 = d_v1[i];
-                float3 v2 = d_v2[i];
+            float3 inv_dir = make_float3(1.0f/dx.x, 1.0f/dx.y, 1.0f/dx.z);
 
-                float3 tri_norm = d_normals[i];
+            // Since we can't recurse, we manage a stack manually.
+            // A depth of 32 is enough for 4 billion triangle (2^32).
+            int stack[32];
+            int stack_ptr = 0;
+            
+            // Push Root Node (Index 0)
+            stack[stack_ptr++] = 0;
 
-                intersect_triangle(px, dx, v0, v1, v2, tri_norm, min_dist, nx);
+            while (stack_ptr > 0) {
+                // Pop a node
+                int node_idx = stack[--stack_ptr];
+                
+                // Fetch node data from global memory
+                // We read it into a local register to be fast
+                BVHNode node = d_bvh_nodes[node_idx];
+
+                // AABB Intersection
+                float t_box;
+                if (!intersect_aabb(px, inv_dir, node.bbox.min, node.bbox.max, t_box)) {
+                    continue; // Missed the box, ignore children
+                }
+
+                // If the box is further than our best hit, skip it
+                if (t_box > min_dist) continue;
+
+                // leaf?
+                // check specific triangles
+                if (node.left_node_index == -1) { // is_leaf logic
+                    for (int i = node.start; i < node.end; ++i) {
+                        float3 v0 = d_v0[i];
+                        float3 v1 = d_v1[i];
+                        float3 v2 = d_v2[i];
+                        float3 tri_norm = d_normals[i];
+
+                        intersect_triangle(px, dx, v0, v1, v2, tri_norm, min_dist, nx);
+                    }
+                } 
+                // add children to stack
+                else {
+                    stack[stack_ptr++] = node.left_node_index;
+                    stack[stack_ptr++] = node.right_node_index;
+                }
             }
         }
         
@@ -277,6 +353,8 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     int ir_len = 44100; // 1 second buffer
     cudaMalloc(&d_ir, ir_len * sizeof(float));
     cudaMemset(d_ir, 0, ir_len * sizeof(float));
+    
+    BVHNode* d_bvh_nodes = nullptr;
 
     // mesh buffer (if needed)
     if (params.room_type == MESH) {
@@ -290,6 +368,12 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
         cudaMemcpy(d_v1, mesh.v1.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
         cudaMemcpy(d_v2, mesh.v2.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
         cudaMemcpy(d_normals, mesh.normals.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
+        if (!mesh.bvh_nodes.empty()) {
+            size_t node_size = mesh.bvh_nodes.size() * sizeof(BVHNode);
+            cudaMalloc(&d_bvh_nodes, node_size);
+            cudaMemcpy(d_bvh_nodes, mesh.bvh_nodes.data(), node_size, cudaMemcpyHostToDevice);
+            printf("Copied %lu BVH nodes to GPU\n", mesh.bvh_nodes.size());
+        }
     }
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
@@ -304,7 +388,8 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
         (int)params.room_type, 
         ir_len,
         params.material,
-        d_v0, d_v1, d_v2, d_normals, mesh.num_triangles
+        d_v0, d_v1, d_v2, d_normals, mesh.num_triangles,
+        d_bvh_nodes
     );
     
     cudaDeviceSynchronize();
@@ -326,4 +411,5 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     if(d_v1) cudaFree(d_v1);
     if(d_v2) cudaFree(d_v2);
     if(d_normals) cudaFree(d_normals);
+    if(d_bvh_nodes) cudaFree(d_bvh_nodes);
 }

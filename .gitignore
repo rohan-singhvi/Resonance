@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 # C extensions
 *.so
+*.mtl
 
 # Distribution / packaging
 .Python

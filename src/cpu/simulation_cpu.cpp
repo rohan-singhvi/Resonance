@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <atomic> 
+#include <mutex>
 #include <random>
 
 // TBB Includes
@@ -74,7 +75,56 @@ inline float intersect_triangle_cpu(
     return 1e20f;
 }
 
+
+// Recursive BVH Traversal
+void traverse_bvh(
+    int node_idx, 
+    const MeshData& mesh, 
+    const float3& origin, const float3& dir, 
+    float& closest_dist, float3& best_normal, int& best_tri_idx
+) {
+    const BVHNode& node = mesh.bvh_nodes[node_idx];
+
+    // box intersection
+    float t_box;
+    if (!node.bbox.intersect(origin, dir, t_box)) {
+        return; // Missed the box, skip entirely!
+    }
+
+    // if the box is further away than our current closest hit,
+    // there is no point looking inside it.
+    if (t_box > closest_dist) return;
+
+    // we check leaf node: checking triangles
+    if (node.is_leaf()) {
+        float3 temp_n;
+        for (int i = node.start; i < node.end; ++i) {
+            float dist = intersect_triangle_cpu(
+                origin, dir, 
+                mesh.v0[i], mesh.v1[i], mesh.v2[i], 
+                mesh.normals[i], 
+                temp_n
+            );
+
+            if (dist < closest_dist) {
+                closest_dist = dist;
+                best_normal = temp_n;
+                best_tri_idx = i;
+            }
+        }
+    } 
+    // recurse into children if necessary
+    else {
+        // We visit children. (Advanced: You could sort them front-to-back 
+        // based on t_box distance to terminate earlier, but let's keep it simple first)
+        traverse_bvh(node.left_node_index, mesh, origin, dir, closest_dist, best_normal, best_tri_idx);
+        traverse_bvh(node.right_node_index, mesh, origin, dir, closest_dist, best_normal, best_tri_idx);
+    }
+}
+
 void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir) {
+    std::vector<RayPath> debug_paths;
+    std::mutex debug_mutex; // because CPU is multi-threaded (TBB)
     int N = params.num_rays;
     int ir_len = 44100; // 1 second
     ir.resize(ir_len, 0.0f);
@@ -87,7 +137,7 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
     std::cout << "Running CPU Simulation (TBB Threads: " << tbb::this_task_arena::max_concurrency() << ")..." << std::endl;
     
     if (params.room_type == MESH) {
-        std::cout << "Mesh Mode: Checking " << mesh.num_triangles << " triangles per ray." << std::endl;
+        std::cout << "Mesh Mode, Scene Geometry: " << mesh.num_triangles << " (Accelerated by BVH)" << std::endl;
     }
 
     // TBB Thread Local Storage
@@ -124,6 +174,12 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
 
             float dist_traveled = 0.0f;
             float energy = 1.0f;
+
+            // Only record the first 100 rays to save memory/sanity
+            bool record_debug = params.debug_rays && (i < 100); 
+            RayPath current_path;
+
+            if (record_debug) current_path.push_back(px);
 
             for (int bounce = 0; bounce < 50; ++bounce) {
                 float min_dist = 1e20f;
@@ -179,19 +235,24 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                 }
                 //  mesh (put this in a function) 
                 else if (params.room_type == MESH) {
-                    float3 temp_n;
-                    for(int t=0; t<mesh.num_triangles; ++t) {
-                        float dist = intersect_triangle_cpu(
-                            px, dx, 
-                            mesh.v0[t], mesh.v1[t], mesh.v2[t], 
-                            mesh.normals[t], 
-                            temp_n
-                        );
-                        
-                        if (dist < min_dist) {
-                            min_dist = dist;
-                            nx = temp_n;
-                            hit_tri_idx = t;
+                    if (!mesh.bvh_nodes.empty()) {
+                        traverse_bvh(0, mesh, px, dx, min_dist, nx, hit_tri_idx);
+                    } 
+                    // Fallback if BVH wasn't built (safety)
+                    else {
+                        float3 temp_n;
+                        for(int t=0; t<mesh.num_triangles; ++t) {
+                            float dist = intersect_triangle_cpu(
+                                px, dx, 
+                                mesh.v0[t], mesh.v1[t], mesh.v2[t], 
+                                mesh.normals[t], 
+                                temp_n
+                            );
+                            if (dist < min_dist) {
+                                min_dist = dist;
+                                nx = temp_n;
+                                hit_tri_idx = t;
+                            }
                         }
                     }
                 }
@@ -199,6 +260,7 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                 //  listener hit?
                 float3 to_l = params.listener_pos - px;
                 float t_proj = dot(to_l, dx);
+
                 
                 // if listener is in front of us and closer than the wall
                 if (t_proj > 0 && t_proj < min_dist) {
@@ -216,6 +278,11 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                 if (min_dist >= 1e19f) {
                     // if (i == 0 && bounce == 0) printf("[Ray 0] Missed Mesh completely.\n");
                     break;
+                }
+
+                if (record_debug) {
+                    float3 hit_point = px + dx * min_dist;
+                    current_path.push_back(hit_point);
                 }
 
                 float rng_trans = rand_float();
@@ -260,6 +327,11 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                     energy *= (1.0f - params.material.absorption);
                 }
 
+                if (record_debug) {
+                    std::lock_guard<std::mutex> lock(debug_mutex);
+                    debug_paths.push_back(current_path);
+                }
+
                 if (energy < 0.001f) break;
             }
         }
@@ -275,5 +347,10 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
         for(int i=0; i<ir_len; ++i) {
             ir[i] += local_buffer[i];
         }
+    }
+    if (params.debug_rays)
+    {
+        std::cout << "Saving debug rays..." << std::endl;
+        save_rays_to_obj("debug_rays.obj", debug_paths);
     }
 }
