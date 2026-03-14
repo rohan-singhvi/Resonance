@@ -7,6 +7,9 @@
 #include "wav_io.h"
 #include "mesh_loader.h"
 #include "material_presets.h"
+#ifdef ENABLE_METAL
+    #include "simulation_metal.h"
+#endif
 
 void print_usage() {
     std::cout << "Usage: ./acoustic_sim [options]\n";
@@ -48,6 +51,9 @@ void run_simulation(
 #ifdef ENABLE_CUDA
     std::cout << "Backend: CUDA GPU" << std::endl;
     run_simulation_gpu(params, mesh, ir, ir_bands, ir_early, ir_late);
+#elif defined(ENABLE_METAL)
+    std::cout << "Backend: Metal GPU" << std::endl;
+    run_simulation_metal(params, mesh, ir);
 #else
     std::cout << "Backend: CPU" << std::endl;
     run_simulation_cpu(params, mesh, ir, ir_bands, ir_early, ir_late);
@@ -69,7 +75,7 @@ int main(int argc, char** argv) {
     params.room_dims = make_float3(10.0f, 5.0f, 3.0f);
     params.source_pos = make_float3(2.0f, 1.5f, 1.5f);
     params.listener_pos = make_float3(8.0f, 1.5f, 1.5f);
-    
+
     params.material.set_uniform_absorption(0.10f);
     params.material.scattering = 0.10f;
     params.material.transmission = 0.0f;
@@ -97,7 +103,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) outfile = argv[++i];
         else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) input_audio_file = argv[++i];
         else if (strcmp(argv[i], "--mix") == 0 && i + 1 < argc) mix = atof(argv[++i]);
-        
+
         else if (strcmp(argv[i], "--absorption") == 0 && i + 1 < argc) params.material.set_uniform_absorption(atof(argv[++i]));
         else if (strcmp(argv[i], "--material") == 0 && i + 1 < argc) {
             if (!MaterialPresets::lookup(argv[++i], params.material.absorption)) {
@@ -129,8 +135,8 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Starting Simulation (" << params.num_rays << " rays)...\n";
-    std::cout << "Mat Props -> Abs: " << params.material.absorption 
-              << ", Scat: " << params.material.scattering 
+    std::cout << "Mat Props -> Abs: " << params.material.absorption
+              << ", Scat: " << params.material.scattering
               << ", Trans: " << params.material.transmission << "\n";
 
     std::vector<float> impulse_response;
@@ -142,7 +148,7 @@ int main(int argc, char** argv) {
     if (!input_audio_file.empty()) {
         std::cout << "Loading input audio: " << input_audio_file << "...\n";
         WavData input = read_wav(input_audio_file);
-        
+
         if (!input.success) {
             std::cerr << "Failed to load input audio.\n";
             return 1;
@@ -151,7 +157,7 @@ int main(int argc, char** argv) {
         std::cout << "Applying Reverb (Convolution)... Mix: " << mix << "\n";
         std::vector<float> wet_result = apply_reverb(input.samples, impulse_response, mix);
         write_wav(outfile, wet_result, input.sample_rate);
-    } 
+    }
     else {
         std::cout << "No input audio provided. Saving raw Room Impulse Response.\n";
         write_wav(outfile, impulse_response, params.sample_rate);
@@ -164,6 +170,6 @@ int main(int argc, char** argv) {
             write_wav(bname, ir_bands[b], params.sample_rate);
         }
     }
-    
+
     return 0;
 }
