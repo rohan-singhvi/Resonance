@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: ["main"]
-  pull_request: {}
+  pull_request:
 
 jobs:
   build-and-test:
@@ -21,11 +21,8 @@ jobs:
         # test_metal.py guards itself with @skipUnless(is_metal_build()) so it
         # reports as skipped here without failing.
         run: |
-          docker run --rm acoustic-sim:test /bin/bash -c "
-            pip3 install pytest -q &&
-            cd /app &&
-            python3 -m pytest tests/ -v --tb=short
-          "
+          docker run --rm acoustic-sim:test \
+            /bin/bash -c 'pip3 install pytest -q && cd /app && python3 -m pytest tests/ -v --tb=short'
 
       - name: Run physics integration test
         run: |
@@ -33,27 +30,24 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}/test_results:/app/test_results \
             acoustic-sim:test \
-            /bin/bash -c "
-              python3 python/generate_beat.py &&
+            /bin/bash -c '
+              set -e
+              python3 python/generate_beat.py
               ./build/acoustic_sim \
-                --room shoebox \
-                --dims 12,12,6 \
-                --rays 5000 \
-                --absorption 0.1 \
-                --scattering 0.8 \
-                --trans 0.2 \
-                --input techno_dry.wav \
-                --mix 0.5 \
-                --out test_results/wet_test.wav &&
-              python3 -c \"
-import soundfile as sf, numpy as np
-d, _ = sf.read('test_results/wet_test.wav')
-assert np.max(np.abs(d)) > 0.01, 'Output is silent'
-print('Physics integration test passed.')
-\" &&
-              python3 python/visualize.py techno_dry.wav test_results/wet_test.wav &&
+                --room shoebox --dims 12,12,6 --rays 5000 \
+                --absorption 0.1 --scattering 0.8 --trans 0.2 \
+                --input techno_dry.wav --mix 0.5 \
+                --out test_results/wet_test.wav
+              python3 python/visualize.py techno_dry.wav test_results/wet_test.wav
               mv acoustic_analysis.png test_results/
-            "
+            '
+
+      - name: Validate output is not silent
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/test_results:/app/test_results \
+            acoustic-sim:test \
+            python3 -c "import soundfile as sf, numpy as np; d, _ = sf.read('test_results/wet_test.wav'); assert np.max(np.abs(d)) > 0.01, 'Output is silent'; print('Validation passed.')"
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
