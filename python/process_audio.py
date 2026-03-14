@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 import soundfile as sf
+from acoustic_metrics import print_metrics
 
 # Check if we are in the Docker Simulator or Real GPU
 IS_SIMULATION = os.environ.get("NUMBA_ENABLE_CUDASIM") == "1"
@@ -147,6 +148,11 @@ def main():
     output_filename = f"{args.output}.wav"
     sf.write(output_filename, final_mix, dry_sr)
     print(f"Saved to '{output_filename}'")
+
+    try:
+        print_metrics(ir_audio, ir_sr)
+    except Exception as e:
+        print(f"Metrics computation failed: {e}")
 
 
 if __name__ == "__main__":

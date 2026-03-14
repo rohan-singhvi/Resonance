@@ -31,6 +31,8 @@ struct SimulationParams {
     float listener_radius = 0.5f;
     int sample_rate = 44100;
     float ir_duration_ms = 1000.0f;
+    float air_absorption = 0.001f;
+    float early_reflection_ms = 80.0f;
 };
 
 // Host wrapper to launch kernel
