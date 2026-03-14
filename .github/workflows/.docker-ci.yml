@@ -2,62 +2,57 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
-  physics-integration-test:
+  build-and-test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker Image
-        # Builds the container with all C++, Python, and FFTW dependencies
+      - name: Build Docker image
         run: docker build --target deploy -t acoustic-sim:test .
 
-      - name: Create Test Output Directory
-        run: mkdir -p test_results
+      - name: Run pytest suite
+        # pytest auto-discovers tests/ on the current branch.
+        # test_metal.py guards itself with @skipUnless(is_metal_build()) so it
+        # reports as skipped here without failing.
+        run: |
+          docker run --rm acoustic-sim:test \
+            /bin/bash -c 'pip3 install pytest -q && cd /app && python3 -m pytest tests/ -v --tb=short'
 
-      - name: Run Physics & Audio Integration Test
-        # We mount (-v) the local 'test_results' folder into the container
-        # so we can extract the wav/png files after the test finishes.
+      - name: Run physics integration test
+        run: |
+          mkdir -p test_results
+          docker run --rm \
+            -v ${{ github.workspace }}/test_results:/app/test_results \
+            acoustic-sim:test \
+            /bin/bash -c '
+              set -e
+              python3 python/generate_beat.py
+              ./build/acoustic_sim \
+                --room shoebox --dims 12,12,6 --rays 5000 \
+                --absorption 0.1 --scattering 0.8 --trans 0.2 \
+                --input techno_dry.wav --mix 0.5 \
+                --out test_results/wet_test.wav
+              python3 python/visualize.py techno_dry.wav test_results/wet_test.wav
+              mv acoustic_analysis.png test_results/
+            '
+
+      - name: Validate output is not silent
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/test_results:/app/test_results \
             acoustic-sim:test \
-            /bin/bash -c "
-              echo '1. Generating Source Audio...' &&
-              python3 python/generate_beat.py &&
-              
-              echo '2. Running Physics Simulation (High Scattering/Transmission)...' &&
-              ./build/acoustic_sim \
-                --room shoebox \
-                --dims 12,12,6 \
-                --rays 5000 \
-                --absorption 0.1 \
-                --scattering 0.8 \
-                --trans 0.2 \
-                --input techno_dry.wav \
-                --mix 0.5 \
-                --out test_results/wet_test.wav &&
-              
-              echo '3. Validating Output (Check for Silence)...' &&
-              python3 -c \"import soundfile as sf; import numpy as np; d, _ = sf.read('test_results/wet_test.wav'); assert np.max(np.abs(d)) > 0.01, 'Error: Output is silent!'\" &&
+            python3 -c "import soundfile as sf, numpy as np; d, _ = sf.read('test_results/wet_test.wav'); assert np.max(np.abs(d)) > 0.01, 'Output is silent'; print('Validation passed.')"
 
-              echo '4. Generating Visualization...' &&
-              python3 python/visualize.py techno_dry.wav test_results/wet_test.wav &&
-              mv acoustic_analysis.png test_results/
-            "
-
-      - name: Upload Test Artifacts
-        # This saves the wav and png files to the GitHub Action summary
-        # allowing you to listen to the result and see the graph even if the build passes.
+      - name: Upload test artifacts
         uses: actions/upload-artifact@v4
-        if: always() # Upload even if the test fails (for debugging)
+        if: always()
         with:
-          name: physics-test-results
+          name: test-results
           path: test_results/
           retention-days: 5

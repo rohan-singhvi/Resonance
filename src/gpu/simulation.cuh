@@ -26,8 +26,11 @@ struct SimulationParams {
     float3 source_pos;
     float3 listener_pos;
     std::string mesh_path;
-
-    MaterialParams material; //can be expanded to per-mesh-id later?
+    MaterialParams material;
+    bool debug_rays = false;
+    float listener_radius = 0.5f;
+    int sample_rate = 44100;
+    float ir_duration_ms = 1000.0f;
 };
 
 // Host wrapper to launch kernel
