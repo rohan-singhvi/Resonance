@@ -7,11 +7,17 @@
 #include "cuda_math.h"
 #include "mesh_loader.h"
 
+static constexpr int NUM_BANDS = 7;
+
 struct MaterialParams {
-    float absorption;   // 0.0 to 1.0 (Energy loss)
-    float scattering;   // 0.0 to 1.0 (Roughness/Diffusion)
-    float transmission; // 0.0 to 1.0 (Sound passing through walls)
-    float thickness;    // Wall thickness in meters
+    float absorption[NUM_BANDS]; // per-octave-band: 125, 250, 500, 1k, 2k, 4k, 8k Hz
+    float scattering;
+    float transmission;
+    float thickness;
+
+    void set_uniform_absorption(float v) {
+        for (int i = 0; i < NUM_BANDS; ++i) absorption[i] = v;
+    }
 };
 
 enum RoomType { SHOEBOX = 0, DOME = 1, MESH = 2 };
@@ -35,11 +41,11 @@ struct SimulationParams {
 // Main Entry Point (Dispatcher)
 void run_simulation(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir);
 
-// CPU Backend
 void run_simulation_cpu(
     const SimulationParams& params,
     const MeshData& mesh,
     std::vector<float>& ir,
+    std::vector<std::vector<float>>& ir_bands,
     std::vector<float>& ir_early,
     std::vector<float>& ir_late
 );
@@ -49,6 +55,7 @@ void run_simulation_gpu(
     const SimulationParams& params,
     const MeshData& mesh,
     std::vector<float>& ir,
+    std::vector<std::vector<float>>& ir_bands,
     std::vector<float>& ir_early,
     std::vector<float>& ir_late
 );

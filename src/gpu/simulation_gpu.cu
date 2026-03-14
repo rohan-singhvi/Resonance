@@ -146,7 +146,7 @@ __global__ void ray_trace_kernel(
     float3* d_dir,
     float3 room_dims,
     float3 listener_pos,
-    float* d_impulse_response,
+    float* d_ir_bands,   // NUM_BANDS * ir_length, band-major layout
     float* d_ir_early,
     float* d_ir_late,
     int room_type,
@@ -161,15 +161,13 @@ __global__ void ray_trace_kernel(
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int seed = idx * 1973 + 9277;
-    
-    // bound check (assuming d_pos size matches num_rays)
-    // can't easily check array size in CUDA, rely on launch bounds
-    
+
     float3 px = d_pos[idx];
     float3 dx = d_dir[idx];
-    
+
     float dist_traveled = 0.0f;
-    float energy = 1.0f;
+    float energy[NUM_BANDS];
+    for (int b = 0; b < NUM_BANDS; ++b) energy[b] = 1.0f;
 
     for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
         float min_dist = 1e20f;
@@ -264,7 +262,8 @@ __global__ void ray_trace_kernel(
         
         if (min_dist >= 1e19f) break;
 
-        energy *= expf(-air_absorption * min_dist);
+        for (int b = 0; b < NUM_BANDS; ++b)
+            energy[b] *= expf(-air_absorption * min_dist);
 
         float3 to_listener = listener_pos - px;
         float t_proj = dot(to_listener, dx);
@@ -278,11 +277,16 @@ __global__ void ray_trace_kernel(
                 int idx_time = (int)((total_dist / SPEED_OF_SOUND) * (float)sample_rate);
 
                 if (idx_time < ir_length) {
-                    atomicAdd(&d_impulse_response[idx_time], energy);
+                    float broadband = 0.0f;
+                    for (int b = 0; b < NUM_BANDS; ++b) {
+                        atomicAdd(&d_ir_bands[b * ir_length + idx_time], energy[b]);
+                        broadband += energy[b];
+                    }
+                    broadband /= NUM_BANDS;
                     if (idx_time < er_cutoff_samples)
-                        atomicAdd(&d_ir_early[idx_time], energy);
+                        atomicAdd(&d_ir_early[idx_time], broadband);
                     else
-                        atomicAdd(&d_ir_late[idx_time], energy);
+                        atomicAdd(&d_ir_late[idx_time], broadband);
                 }
             }
         }
@@ -316,11 +320,14 @@ __global__ void ray_trace_kernel(
             // Nudge
             px = hit_point + nx * 0.001f;
             
-            // Absorption
-            energy *= (1.0f - mat.absorption);
+            for (int b = 0; b < NUM_BANDS; ++b)
+                energy[b] *= (1.0f - mat.absorption[b]);
         }
 
-        if (energy < 0.001f) break;
+        bool all_dead = true;
+        for (int b = 0; b < NUM_BANDS; ++b)
+            if (energy[b] >= 0.001f) { all_dead = false; break; }
+        if (all_dead) break;
     }
 }
 
@@ -328,6 +335,7 @@ void run_simulation_gpu(
     const SimulationParams& params,
     const MeshData& mesh,
     std::vector<float>& h_impulse_response,
+    std::vector<std::vector<float>>& h_ir_bands,
     std::vector<float>& h_ir_early,
     std::vector<float>& h_ir_late
 ) {
@@ -349,9 +357,8 @@ void run_simulation_gpu(
         h_dir[i] = normalize(d);
     }
 
-    // allocate device memory
     float3 *d_pos, *d_dir, *d_v0 = nullptr, *d_v1 = nullptr, *d_v2 = nullptr, *d_normals = nullptr;
-    float *d_ir;
+    float *d_ir_bands = nullptr;
     
     cudaMalloc(&d_pos, N * sizeof(float3));
     cudaMalloc(&d_dir, N * sizeof(float3));
@@ -362,8 +369,8 @@ void run_simulation_gpu(
     int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
     int er_cutoff = (int)(params.sample_rate * params.early_reflection_ms / 1000.0f);
 
-    cudaMalloc(&d_ir, ir_len * sizeof(float));
-    cudaMemset(d_ir, 0, ir_len * sizeof(float));
+    cudaMalloc(&d_ir_bands, (size_t)NUM_BANDS * ir_len * sizeof(float));
+    cudaMemset(d_ir_bands, 0, (size_t)NUM_BANDS * ir_len * sizeof(float));
 
     float *d_ir_early = nullptr, *d_ir_late = nullptr;
     cudaMalloc(&d_ir_early, ir_len * sizeof(float));
@@ -401,7 +408,7 @@ void run_simulation_gpu(
         d_pos, d_dir,
         params.room_dims,
         params.listener_pos,
-        d_ir,
+        d_ir_bands,
         d_ir_early,
         d_ir_late,
         (int)params.room_type,
@@ -423,8 +430,22 @@ void run_simulation_gpu(
         printf("CUDA Error: %s\n", cudaGetErrorString(err));
     }
     
-    h_impulse_response.resize(ir_len);
-    cudaMemcpy(h_impulse_response.data(), d_ir, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
+    // copy per-band IRs to host and build broadband mix
+    std::vector<std::vector<float>> band_irs(NUM_BANDS, std::vector<float>(ir_len));
+    for (int b = 0; b < NUM_BANDS; ++b) {
+        cudaMemcpy(band_irs[b].data(), d_ir_bands + (size_t)b * ir_len,
+                   ir_len * sizeof(float), cudaMemcpyDeviceToHost);
+    }
+
+    h_impulse_response.assign(ir_len, 0.0f);
+    for (int b = 0; b < NUM_BANDS; ++b)
+        for (int i = 0; i < ir_len; ++i)
+            h_impulse_response[i] += band_irs[b][i];
+    for (int i = 0; i < ir_len; ++i)
+        h_impulse_response[i] /= NUM_BANDS;
+
+    // pass band IRs back via the ir_bands out-param
+    h_ir_bands = std::move(band_irs);
 
     h_ir_early.resize(ir_len);
     cudaMemcpy(h_ir_early.data(), d_ir_early, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
@@ -433,8 +454,7 @@ void run_simulation_gpu(
     cudaMemcpy(h_ir_late.data(), d_ir_late, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
 
     cudaFree(d_pos);
-    cudaFree(d_dir);
-    cudaFree(d_ir);
+    cudaFree(d_ir_bands);
     cudaFree(d_ir_early);
     cudaFree(d_ir_late);
     if(d_v0) cudaFree(d_v0);

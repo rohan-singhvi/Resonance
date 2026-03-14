@@ -6,6 +6,7 @@
 #include "convolution.h"
 #include "wav_io.h"
 #include "mesh_loader.h"
+#include "material_presets.h"
 
 void print_usage() {
     std::cout << "Usage: ./acoustic_sim [options]\n";
@@ -17,7 +18,8 @@ void print_usage() {
     std::cout << "  --input <file>     Input audio file\n";
     std::cout << "  --mix <0.0-1.0>    Reverb mix (default 0.4)\n";
     std::cout << "  --out <file>       Output file\n";
-    std::cout << "  --absorption <0-1>       Wall absorption (0=Reflective, 1=Dead)\n";
+    std::cout << "  --material <name>         Preset material (concrete, carpet_thick, glass, ...)\n";
+    std::cout << "  --absorption <0-1>        Broadband absorption, all bands set uniformly\n";
     std::cout << "  --scattering <0-1>       Wall roughness (0=Mirror, 1=Diffuse)\n";
     std::cout << "  --trans <0-1>            Transmission (0=Opaque, 1=Transparent)\n";
     std::cout << "  --thick <meters>         Wall thickness (default 0.2)\n";
@@ -39,15 +41,16 @@ void run_simulation(
     const SimulationParams& params,
     const MeshData& mesh,
     std::vector<float>& ir,
+    std::vector<std::vector<float>>& ir_bands,
     std::vector<float>& ir_early,
     std::vector<float>& ir_late
 ) {
 #ifdef ENABLE_CUDA
     std::cout << "Backend: CUDA GPU" << std::endl;
-    run_simulation_gpu(params, mesh, ir, ir_early, ir_late);
+    run_simulation_gpu(params, mesh, ir, ir_bands, ir_early, ir_late);
 #else
     std::cout << "Backend: CPU" << std::endl;
-    run_simulation_cpu(params, mesh, ir, ir_early, ir_late);
+    run_simulation_cpu(params, mesh, ir, ir_bands, ir_early, ir_late);
 #endif
 }
 
@@ -67,7 +70,7 @@ int main(int argc, char** argv) {
     params.source_pos = make_float3(2.0f, 1.5f, 1.5f);
     params.listener_pos = make_float3(8.0f, 1.5f, 1.5f);
     
-    params.material.absorption = 0.10f;
+    params.material.set_uniform_absorption(0.10f);
     params.material.scattering = 0.10f;
     params.material.transmission = 0.0f;
     params.material.thickness = 0.2f;
@@ -95,7 +98,14 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) input_audio_file = argv[++i];
         else if (strcmp(argv[i], "--mix") == 0 && i + 1 < argc) mix = atof(argv[++i]);
         
-        else if (strcmp(argv[i], "--absorption") == 0 && i + 1 < argc) params.material.absorption = atof(argv[++i]);
+        else if (strcmp(argv[i], "--absorption") == 0 && i + 1 < argc) params.material.set_uniform_absorption(atof(argv[++i]));
+        else if (strcmp(argv[i], "--material") == 0 && i + 1 < argc) {
+            if (!MaterialPresets::lookup(argv[++i], params.material.absorption)) {
+                std::cerr << "Unknown material: " << argv[i] << "\nAvailable:\n";
+                MaterialPresets::list_names();
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--scattering") == 0 && i + 1 < argc) params.material.scattering = atof(argv[++i]);
         else if (strcmp(argv[i], "--trans") == 0 && i + 1 < argc) params.material.transmission = atof(argv[++i]);
         else if (strcmp(argv[i], "--thick") == 0 && i + 1 < argc) params.material.thickness = atof(argv[++i]);
@@ -124,9 +134,10 @@ int main(int argc, char** argv) {
               << ", Trans: " << params.material.transmission << "\n";
 
     std::vector<float> impulse_response;
+    std::vector<std::vector<float>> ir_bands;
     std::vector<float> ir_early;
     std::vector<float> ir_late;
-    run_simulation(params, mesh, impulse_response, ir_early, ir_late);
+    run_simulation(params, mesh, impulse_response, ir_bands, ir_early, ir_late);
 
     if (!input_audio_file.empty()) {
         std::cout << "Loading input audio: " << input_audio_file << "...\n";
@@ -146,6 +157,12 @@ int main(int argc, char** argv) {
         write_wav(outfile, impulse_response, params.sample_rate);
         write_wav("out_early.wav", ir_early, params.sample_rate);
         write_wav("out_late.wav", ir_late, params.sample_rate);
+
+        static const char* band_names[] = {"125hz","250hz","500hz","1khz","2khz","4khz","8khz"};
+        for (int b = 0; b < NUM_BANDS; ++b) {
+            std::string bname = std::string("out_band_") + band_names[b] + ".wav";
+            write_wav(bname, ir_bands[b], params.sample_rate);
+        }
     }
     
     return 0;
