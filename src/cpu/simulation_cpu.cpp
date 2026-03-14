@@ -126,13 +126,12 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
     std::vector<RayPath> debug_paths;
     std::mutex debug_mutex; // because CPU is multi-threaded (TBB)
     int N = params.num_rays;
-    int ir_len = 44100; // 1 second
+    int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
     ir.resize(ir_len, 0.0f);
 
     const float SPEED_OF_SOUND = 343.0f;
-    const float SAMPLE_RATE = 44100.0f;
-    // 0.5 to ensure hits with lower ray counts
-    const float LISTENER_RADIUS = 0.5f; 
+    const float SAMPLE_RATE = (float)params.sample_rate;
+    const float LISTENER_RADIUS = params.listener_radius;
 
     std::cout << "Running CPU Simulation (TBB Threads: " << tbb::this_task_arena::max_concurrency() << ")..." << std::endl;
     

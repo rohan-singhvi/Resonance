@@ -3,8 +3,6 @@
 #include <cstdio>
 
 #define SPEED_OF_SOUND 343.0f
-#define SAMPLE_RATE 44100.0f
-#define LISTENER_RADIUS 0.5f
 #define MAX_BOUNCES 50
 
 __device__ bool intersect_aabb(
@@ -57,8 +55,7 @@ __device__ float rand_gpu(unsigned int& seed) {
     return (float)(seed) / 4294967296.0f;
 }
 
-// random hemisphere vector
-__device__ float3 random_hemisphere_gpu(unsigned int& seed, float3 normal) {
+__device__ float3 random_cosine_hemisphere_gpu(unsigned int& seed, float3 normal) {
     float u1 = rand_gpu(seed);
     float u2 = rand_gpu(seed);
     
@@ -152,8 +149,9 @@ __global__ void ray_trace_kernel(
     float* d_impulse_response,
     int room_type,
     int ir_length,
+    float listener_radius,
+    int sample_rate,
     MaterialParams mat,
-    // mesh data
     float3* d_v0, float3* d_v1, float3* d_v2, float3* d_normals, int num_triangles,
     BVHNode* d_bvh_nodes
 ) {
@@ -271,10 +269,9 @@ __global__ void ray_trace_kernel(
             float3 closest_point = px + dx * t_proj;
             float dist_sq = length_sq(listener_pos - closest_point);
             
-            if (dist_sq < (LISTENER_RADIUS * LISTENER_RADIUS)) {
-                // hit!
+            if (dist_sq < (listener_radius * listener_radius)) {
                 float total_dist = dist_traveled + t_proj;
-                int idx_time = (int)((total_dist / SPEED_OF_SOUND) * SAMPLE_RATE);
+                int idx_time = (int)((total_dist / SPEED_OF_SOUND) * (float)sample_rate);
                 
                 if (idx_time < ir_length) {
                     atomicAdd(&d_impulse_response[idx_time], energy);
@@ -302,7 +299,7 @@ __global__ void ray_trace_kernel(
             float3 spec = dx - 2.0f * d_dot_n * nx;
 
             // Diffuse
-            float3 diffuse = random_hemisphere_gpu(seed, nx);
+            float3 diffuse = random_cosine_hemisphere_gpu(seed, nx);
 
             // Mix
             float3 mixed = spec * (1.0f - mat.scattering) + diffuse * mat.scattering;
@@ -349,8 +346,7 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     cudaMemcpy(d_pos, h_pos.data(), N * sizeof(float3), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dir, h_dir.data(), N * sizeof(float3), cudaMemcpyHostToDevice);
 
-    // IR buffer
-    int ir_len = 44100; // 1 second buffer
+    int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
     cudaMalloc(&d_ir, ir_len * sizeof(float));
     cudaMemset(d_ir, 0, ir_len * sizeof(float));
     
@@ -381,12 +377,14 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     printf("Launching Kernel: %d rays, %d blocks\n", N, blocks);
     
     ray_trace_kernel<<<blocks, threads>>>(
-        d_pos, d_dir, 
-        params.room_dims, 
-        params.listener_pos, 
-        d_ir, 
-        (int)params.room_type, 
+        d_pos, d_dir,
+        params.room_dims,
+        params.listener_pos,
+        d_ir,
+        (int)params.room_type,
         ir_len,
+        params.listener_radius,
+        params.sample_rate,
         params.material,
         d_v0, d_v1, d_v2, d_normals, mesh.num_triangles,
         d_bvh_nodes

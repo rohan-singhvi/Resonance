@@ -139,10 +139,9 @@ def ray_trace_kernel(
     mesh_normals,
     num_triangles,
 ):
-    # CONSTANTS
     SPEED_OF_SOUND = 343.0
     SAMPLE_RATE = 44100.0
-    LISTENER_RADIUS = 0.2  # 20cm microphone
+    LISTENER_RADIUS = 0.5
 
     idx = cuda.grid(1)
     # dont use more threads than we need to
@@ -371,7 +370,12 @@ def main():
     parser.add_argument("--source", type=str, default="2.0,1.5,1.5")
     parser.add_argument("--listener", type=str, default="8.0,1.5,1.5")
     parser.add_argument("--out", type=str, default="room_impulse.wav")
+    parser.add_argument("--sr", type=int, default=44100)
+    parser.add_argument("--ir-len", type=float, default=1000.0, dest="ir_len")
     args = parser.parse_args()
+
+    SAMPLE_RATE = args.sr
+    IR_LEN = int(args.sr * args.ir_len / 1000.0)
 
     NUM_RAYS = args.rays
     SOURCE_POS = parse_vec3(args.source)
@@ -381,7 +385,7 @@ def main():
     d_pos = cuda.to_device(h_pos)
     d_dir = cuda.to_device(h_dir)
     d_hits = cuda.to_device(np.zeros(NUM_RAYS, dtype=np.float32))
-    d_impulse_response = cuda.to_device(xp.zeros(44100, dtype=np.float32))
+    d_impulse_response = cuda.to_device(xp.zeros(IR_LEN, dtype=np.float32))
     d_listener_pos = cuda.to_device(LISTENER_POS)
 
     # Setup Room & Mesh Data
@@ -407,6 +411,12 @@ def main():
         if not args.mesh_file:
             print("Error: --mesh-file is required for room type 'mesh'")
             sys.exit(1)
+        print(
+            "Warning: mesh mode in this script uses O(N) brute-force triangle intersection "
+            "with no BVH. For large meshes use the C++ binary (acoustic_sim --room mesh) "
+            "which has full BVH acceleration.",
+            file=sys.stderr,
+        )
         ROOM_TYPE_ID = 2
         d_v0, d_v1, d_v2, d_normals, num_triangles = load_mesh_to_gpu(args.mesh_file)
 
@@ -446,7 +456,7 @@ def main():
         final_ir = final_ir / max_val
 
     wav_data = (final_ir * 32767).astype(np.int16)
-    scipy.io.wavfile.write(args.out, 44100, wav_data)
+    scipy.io.wavfile.write(args.out, SAMPLE_RATE, wav_data)
     print(f"Saved to {args.out}")
 
 

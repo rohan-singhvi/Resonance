@@ -17,11 +17,14 @@ void print_usage() {
     std::cout << "  --input <file>     Input audio file\n";
     std::cout << "  --mix <0.0-1.0>    Reverb mix (default 0.4)\n";
     std::cout << "  --out <file>       Output file\n";
-    std::cout << "  --absorption <0-1> Wall absorption (0=Reflective, 1=Dead)\n";
-    std::cout << "  --scattering <0-1> Wall roughness (0=Mirror, 1=Diffuse)\n";
-    std::cout << "  --trans <0-1>      Transmission (0=Opaque, 1=Transparent)\n";
-    std::cout << "  --thick <meters>   Wall thickness (default 0.1)\n";
-    std::cout << "  --debug            Outputs a debug OBJ file to visualize rays\n";
+    std::cout << "  --absorption <0-1>       Wall absorption (0=Reflective, 1=Dead)\n";
+    std::cout << "  --scattering <0-1>       Wall roughness (0=Mirror, 1=Diffuse)\n";
+    std::cout << "  --trans <0-1>            Transmission (0=Opaque, 1=Transparent)\n";
+    std::cout << "  --thick <meters>         Wall thickness (default 0.2)\n";
+    std::cout << "  --listener-radius <m>    Listener sphere radius (default 0.5)\n";
+    std::cout << "  --sr <hz>                Sample rate: 44100, 48000, 96000 (default 44100)\n";
+    std::cout << "  --ir-len <ms>            IR duration in milliseconds (default 1000)\n";
+    std::cout << "  --debug                  Outputs a debug OBJ file to visualize rays\n";
 }
 
 float3 parse_dims(const char* arg) {
@@ -56,11 +59,14 @@ int main(int argc, char** argv) {
     params.source_pos = make_float3(2.0f, 1.5f, 1.5f);
     params.listener_pos = make_float3(8.0f, 1.5f, 1.5f);
     
-    params.material.absorption = 0.10f;  // Concrete (Reflective)
-    params.material.scattering = 0.10f;  // Smooth surface
-    params.material.transmission = 0.0f; // Solid walls
-    params.material.thickness = 0.2f;    // 20cm
-    
+    params.material.absorption = 0.10f;
+    params.material.scattering = 0.10f;
+    params.material.transmission = 0.0f;
+    params.material.thickness = 0.2f;
+    params.listener_radius = 0.5f;
+    params.sample_rate = 44100;
+    params.ir_duration_ms = 1000.0f;
+
     std::string outfile = "out.wav";
     std::string input_audio_file = "";
     float mix = 0.4f;
@@ -84,6 +90,9 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--trans") == 0 && i + 1 < argc) params.material.transmission = atof(argv[++i]);
         else if (strcmp(argv[i], "--thick") == 0 && i + 1 < argc) params.material.thickness = atof(argv[++i]);
         else if (strcmp(argv[i], "--debug") == 0) params.debug_rays = true;
+        else if (strcmp(argv[i], "--listener-radius") == 0 && i + 1 < argc) params.listener_radius = atof(argv[++i]);
+        else if (strcmp(argv[i], "--sr") == 0 && i + 1 < argc) params.sample_rate = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--ir-len") == 0 && i + 1 < argc) params.ir_duration_ms = atof(argv[++i]);
         else if (strcmp(argv[i], "--help") == 0) { print_usage(); return 0; }
     }
 
@@ -120,7 +129,7 @@ int main(int argc, char** argv) {
     } 
     else {
         std::cout << "No input audio provided. Saving raw Room Impulse Response.\n";
-        write_wav(outfile, impulse_response, 44100);
+        write_wav(outfile, impulse_response, params.sample_rate);
     }
     
     return 0;
