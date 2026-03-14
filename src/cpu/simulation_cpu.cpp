@@ -122,12 +122,21 @@ void traverse_bvh(
     }
 }
 
-void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir) {
+void run_simulation_cpu(
+    const SimulationParams& params,
+    const MeshData& mesh,
+    std::vector<float>& ir,
+    std::vector<float>& ir_early,
+    std::vector<float>& ir_late
+) {
     std::vector<RayPath> debug_paths;
-    std::mutex debug_mutex; // because CPU is multi-threaded (TBB)
+    std::mutex debug_mutex;
     int N = params.num_rays;
     int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
+    int er_cutoff = (int)(params.sample_rate * params.early_reflection_ms / 1000.0f);
     ir.resize(ir_len, 0.0f);
+    ir_early.resize(ir_len, 0.0f);
+    ir_late.resize(ir_len, 0.0f);
 
     const float SPEED_OF_SOUND = 343.0f;
     const float SAMPLE_RATE = (float)params.sample_rate;
@@ -139,10 +148,14 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
         std::cout << "Mesh Mode, Scene Geometry: " << mesh.num_triangles << " (Accelerated by BVH)" << std::endl;
     }
 
-    // TBB Thread Local Storage
-    // It automatically creates a local std::vector<float> for every thread that needs one.
     tbb::enumerable_thread_specific<std::vector<float>> tls_irs([ir_len]() {
-        return std::vector<float>(ir_len, 0.0f); // Initializer
+        return std::vector<float>(ir_len, 0.0f);
+    });
+    tbb::enumerable_thread_specific<std::vector<float>> tls_early([ir_len]() {
+        return std::vector<float>(ir_len, 0.0f);
+    });
+    tbb::enumerable_thread_specific<std::vector<float>> tls_late([ir_len]() {
+        return std::vector<float>(ir_len, 0.0f);
     });
     
     // Global Hit Counter
@@ -151,8 +164,9 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
     tbb::parallel_for(tbb::blocked_range<int>(0, N), 
         [&](const tbb::blocked_range<int>& range) {
 
-        // Get reference to this thread's local IR buffer
-        auto& local_ir = tls_irs.local();
+        auto& local_ir    = tls_irs.local();
+        auto& local_early = tls_early.local();
+        auto& local_late  = tls_late.local();
 
         // Iterate over the chunk assigned to this thread
         for (int i = range.begin(); i != range.end(); ++i) {
@@ -256,27 +270,28 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
                     }
                 }
 
-                //  listener hit?
+                if (min_dist >= 1e19f) break;
+
+                energy *= expf(-params.air_absorption * min_dist);
+
                 float3 to_l = params.listener_pos - px;
                 float t_proj = dot(to_l, dx);
 
-                
-                // if listener is in front of us and closer than the wall
                 if (t_proj > 0 && t_proj < min_dist) {
                     float3 closest = px + dx * t_proj;
                     float dist_sq = length_sq(params.listener_pos - closest);
-                    if (dist_sq < LISTENER_RADIUS*LISTENER_RADIUS) {
+                    if (dist_sq < LISTENER_RADIUS * LISTENER_RADIUS) {
                         float total_dist = dist_traveled + t_proj;
                         int idx = (int)((total_dist / SPEED_OF_SOUND) * SAMPLE_RATE);
                         if (idx < ir_len) {
                             local_ir[idx] += energy;
-                            total_hits++; 
+                            if (idx < er_cutoff)
+                                local_early[idx] += energy;
+                            else
+                                local_late[idx] += energy;
+                            total_hits++;
                         }
                     }
-                }
-                if (min_dist >= 1e19f) {
-                    // if (i == 0 && bounce == 0) printf("[Ray 0] Missed Mesh completely.\n");
-                    break;
                 }
 
                 if (record_debug) {
@@ -341,12 +356,17 @@ void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, st
         std::cout << "WARNING: No rays hit the listener! Try increasing --rays or the listener size is too small." << std::endl;
     }
 
-    // We iterate through the enumerable_thread_specific storage and sum them up
-    for(const auto& local_buffer : tls_irs) {
-        for(int i=0; i<ir_len; ++i) {
-            ir[i] += local_buffer[i];
-        }
-    }
+    for (const auto& buf : tls_irs)
+        for (int i = 0; i < ir_len; ++i)
+            ir[i] += buf[i];
+
+    for (const auto& buf : tls_early)
+        for (int i = 0; i < ir_len; ++i)
+            ir_early[i] += buf[i];
+
+    for (const auto& buf : tls_late)
+        for (int i = 0; i < ir_len; ++i)
+            ir_late[i] += buf[i];
     if (params.debug_rays)
     {
         std::cout << "Saving debug rays..." << std::endl;

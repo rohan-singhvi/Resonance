@@ -147,10 +147,14 @@ __global__ void ray_trace_kernel(
     float3 room_dims,
     float3 listener_pos,
     float* d_impulse_response,
+    float* d_ir_early,
+    float* d_ir_late,
     int room_type,
     int ir_length,
+    int er_cutoff_samples,
     float listener_radius,
     int sample_rate,
+    float air_absorption,
     MaterialParams mat,
     float3* d_v0, float3* d_v1, float3* d_v2, float3* d_normals, int num_triangles,
     BVHNode* d_bvh_nodes
@@ -258,23 +262,27 @@ __global__ void ray_trace_kernel(
             }
         }
         
-        // Missed everything?
         if (min_dist >= 1e19f) break;
 
-        // listener intersection along this ray segment
+        energy *= expf(-air_absorption * min_dist);
+
         float3 to_listener = listener_pos - px;
         float t_proj = dot(to_listener, dx);
 
         if (t_proj > 0.0f && t_proj < min_dist) {
             float3 closest_point = px + dx * t_proj;
             float dist_sq = length_sq(listener_pos - closest_point);
-            
+
             if (dist_sq < (listener_radius * listener_radius)) {
                 float total_dist = dist_traveled + t_proj;
                 int idx_time = (int)((total_dist / SPEED_OF_SOUND) * (float)sample_rate);
-                
+
                 if (idx_time < ir_length) {
                     atomicAdd(&d_impulse_response[idx_time], energy);
+                    if (idx_time < er_cutoff_samples)
+                        atomicAdd(&d_ir_early[idx_time], energy);
+                    else
+                        atomicAdd(&d_ir_late[idx_time], energy);
                 }
             }
         }
@@ -316,8 +324,13 @@ __global__ void ray_trace_kernel(
     }
 }
 
-// wrapper
-void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& h_impulse_response) {
+void run_simulation_gpu(
+    const SimulationParams& params,
+    const MeshData& mesh,
+    std::vector<float>& h_impulse_response,
+    std::vector<float>& h_ir_early,
+    std::vector<float>& h_ir_late
+) {
     int N = params.num_rays;
     
     // generate rays
@@ -347,9 +360,17 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     cudaMemcpy(d_dir, h_dir.data(), N * sizeof(float3), cudaMemcpyHostToDevice);
 
     int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
+    int er_cutoff = (int)(params.sample_rate * params.early_reflection_ms / 1000.0f);
+
     cudaMalloc(&d_ir, ir_len * sizeof(float));
     cudaMemset(d_ir, 0, ir_len * sizeof(float));
-    
+
+    float *d_ir_early = nullptr, *d_ir_late = nullptr;
+    cudaMalloc(&d_ir_early, ir_len * sizeof(float));
+    cudaMemset(d_ir_early, 0, ir_len * sizeof(float));
+    cudaMalloc(&d_ir_late, ir_len * sizeof(float));
+    cudaMemset(d_ir_late, 0, ir_len * sizeof(float));
+
     BVHNode* d_bvh_nodes = nullptr;
 
     // mesh buffer (if needed)
@@ -381,10 +402,14 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
         params.room_dims,
         params.listener_pos,
         d_ir,
+        d_ir_early,
+        d_ir_late,
         (int)params.room_type,
         ir_len,
+        er_cutoff,
         params.listener_radius,
         params.sample_rate,
+        params.air_absorption,
         params.material,
         d_v0, d_v1, d_v2, d_normals, mesh.num_triangles,
         d_bvh_nodes
@@ -401,10 +426,17 @@ void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, st
     h_impulse_response.resize(ir_len);
     cudaMemcpy(h_impulse_response.data(), d_ir, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
 
-    // Cleanup
+    h_ir_early.resize(ir_len);
+    cudaMemcpy(h_ir_early.data(), d_ir_early, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
+
+    h_ir_late.resize(ir_len);
+    cudaMemcpy(h_ir_late.data(), d_ir_late, ir_len * sizeof(float), cudaMemcpyDeviceToHost);
+
     cudaFree(d_pos);
     cudaFree(d_dir);
     cudaFree(d_ir);
+    cudaFree(d_ir_early);
+    cudaFree(d_ir_late);
     if(d_v0) cudaFree(d_v0);
     if(d_v1) cudaFree(d_v1);
     if(d_v2) cudaFree(d_v2);

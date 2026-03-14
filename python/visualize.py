@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import soundfile as sf
 import argparse
 from scipy.signal import spectrogram
+from acoustic_metrics import schroeder_integration, compute_rt60
 
 def load_wav(path):
     try:
@@ -15,7 +16,7 @@ def load_wav(path):
         print(f"Error loading {path}: {e}")
         return None, None
 
-def plot_comparison(dry_path, wet_path):
+def plot_comparison(dry_path, wet_path, ir_path=None):
     print(f"Comparing '{dry_path}' vs '{wet_path}'...")
     
     dry, sr1 = load_wav(dry_path)
@@ -31,9 +32,9 @@ def plot_comparison(dry_path, wet_path):
     # Time axis
     time = np.linspace(0, min_len / sr1, min_len)
 
-    # Setup Plots
-    fig, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-    plt.subplots_adjust(hspace=0.3)
+    n_plots = 4 if ir_path else 3
+    fig, axs = plt.subplots(n_plots, 1, figsize=(12, 4 * n_plots), sharex=False)
+    plt.subplots_adjust(hspace=0.4)
 
     # 1. Waveform Comparison
     axs[0].set_title("Time Domain: Amplitude Decay")
@@ -67,6 +68,26 @@ def plot_comparison(dry_path, wet_path):
     axs[2].grid(True, alpha=0.3)
     axs[2].set_xlabel("Time (s)")
 
+    if ir_path:
+        ir, ir_sr = load_wav(ir_path)
+        if ir is not None:
+            curve = schroeder_integration(ir, ir_sr)
+            rt60 = compute_rt60(ir, ir_sr)
+            ir_time = np.arange(len(ir)) / ir_sr
+
+            axs[3].plot(ir_time, curve, color="seagreen", label="Schroeder curve")
+            axs[3].set_ylim(-70, 5)
+            axs[3].set_ylabel("Level (dB)")
+            axs[3].set_xlabel("Time (s)")
+            axs[3].set_title("Schroeder Integration")
+            axs[3].grid(True, alpha=0.3)
+
+            if rt60 is not None:
+                axs[3].axvline(x=rt60, color="red", linestyle="--", label=f"RT60 = {rt60:.2f} s")
+                axs[3].axhline(y=-60, color="gray", linestyle=":", alpha=0.5)
+
+            axs[3].legend(loc="upper right")
+
     output_img = "acoustic_analysis.png"
     plt.savefig(output_img)
     print(f"Analysis saved to: {output_img}")
@@ -75,6 +96,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("dry", help="Path to dry wav")
     parser.add_argument("wet", help="Path to wet wav")
+    parser.add_argument("--ir", help="Path to room impulse response wav (enables Schroeder panel)")
     args = parser.parse_args()
-    
-    plot_comparison(args.dry, args.wet)
+
+    plot_comparison(args.dry, args.wet, ir_path=args.ir)
