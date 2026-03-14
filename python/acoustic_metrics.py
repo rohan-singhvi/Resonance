@@ -67,7 +67,7 @@ def compute_c50(ir: np.ndarray, sr: int) -> float:
     cutoff = int(0.050 * sr)
     early = np.sum(ir[:cutoff] ** 2)
     late = np.sum(ir[cutoff:] ** 2)
-    return 10.0 * np.log10(early / (late + 1e-12))
+    return 10.0 * np.log10((early + 1e-12) / (late + 1e-12))
 
 
 def print_metrics(ir: np.ndarray, sr: int) -> None:
