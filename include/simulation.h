@@ -36,6 +36,10 @@ struct SimulationParams {
     float ir_duration_ms = 1000.0f;
     float air_absorption = 0.001f;
     float early_reflection_ms = 80.0f;
+    // Per-surface material support: index 0 = global/default; 1..N = per OBJ group.
+    std::vector<MaterialParams> scene_materials;
+    // Raw "--mat-assign" value, e.g. "floor=carpet_thick,walls=concrete"
+    std::string mat_assign;
 };
 
 // Main Entry Point (Dispatcher)
