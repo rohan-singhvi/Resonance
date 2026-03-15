@@ -124,6 +124,8 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--ir-len") == 0 && i + 1 < argc) params.ir_duration_ms = atof(argv[++i]);
         else if (strcmp(argv[i], "--air-absorption") == 0 && i + 1 < argc) params.air_absorption = atof(argv[++i]);
         else if (strcmp(argv[i], "--early-ms") == 0 && i + 1 < argc) params.early_reflection_ms = atof(argv[++i]);
+        else if (strcmp(argv[i], "--source") == 0 && i + 1 < argc) params.source_pos = parse_dims(argv[++i]);
+        else if (strcmp(argv[i], "--listener") == 0 && i + 1 < argc) params.listener_pos = parse_dims(argv[++i]);
         else if (strcmp(argv[i], "--mat-assign") == 0 && i + 1 < argc) params.mat_assign = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) { print_usage(); return 0; }
     }

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Resonance — Acoustic Room Designer</title>
+    <meta name="description" content="Design rooms, simulate acoustics, hear the results. GPU-accelerated stochastic ray tracing.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1 class="logo">Resonance</h1>
+            <span class="badge">beta</span>
+        </div>
+        <a href="/" class="back-link">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            zo.computer
+        </a>
+    </header>
+
+    <main>
+        <section class="viewport-section">
+            <div class="viewport-container">
+                <canvas id="viewport"></canvas>
+                <div class="viewport-overlay">
+                    <button id="reset-cam" class="icon-btn" title="Reset camera">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 1 1 1.76 4.24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M2 12V8h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </div>
+                <div id="sim-status" class="sim-status hidden">
+                    <div class="spinner"></div>
+                    <span>Simulating...</span>
+                </div>
+            </div>
+
+            <div id="results-strip" class="results-strip hidden">
+                <div class="metric-card">
+                    <span class="metric-label">RT60</span>
+                    <span class="metric-value" id="m-rt60">—</span>
+                    <span class="metric-unit">s</span>
+                    <div class="metric-tooltip">Reverberation time — how long until sound decays 60 dB</div>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">EDT</span>
+                    <span class="metric-value" id="m-edt">—</span>
+                    <span class="metric-unit">s</span>
+                    <div class="metric-tooltip">Early Decay Time — perceived reverb length (first 10 dB)</div>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">C50</span>
+                    <span class="metric-value" id="m-c50">—</span>
+                    <span class="metric-unit">dB</span>
+                    <div class="metric-tooltip">Clarity — ratio of early to late energy. Positive = clearer speech</div>
+                </div>
+                <div class="metric-card waveform-card">
+                    <canvas id="waveform" height="64"></canvas>
+                </div>
+                <div class="metric-card audio-card">
+                    <button id="play-ir" class="play-btn" disabled title="Play impulse response">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 3L15 9L4 15V3Z" fill="currentColor"/></svg>
+                    </button>
+                    <button id="play-convolved" class="play-btn" disabled title="Hear the room (convolved clap)">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 3L15 9L4 15V3Z" fill="currentColor"/></svg>
+                        <span class="btn-label">Room</span>
+                    </button>
+                    <a id="download-ir" class="download-btn" title="Download impulse response WAV">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0L5 7m3 3l3-3M3 12h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <aside class="controls">
+            <div class="controls-scroll">
+                <!-- Presets -->
+                <div class="control-section">
+                    <h3 class="section-title">Presets</h3>
+                    <div class="preset-grid" id="preset-grid"></div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Room -->
+                <div class="control-section">
+                    <h3 class="section-title">Room</h3>
+                    <div class="control-row">
+                        <label>Type</label>
+                        <div class="seg-control">
+                            <button class="seg-btn active" data-room="shoebox">Shoebox</button>
+                            <button class="seg-btn" data-room="dome">Dome</button>
+                        </div>
+                    </div>
+                    <div class="control-row" id="dims-row">
+                        <label>Dimensions</label>
+                        <div class="dim-fields">
+                            <div class="dim-field">
+                                <input type="number" id="dim-x" value="10" step="0.5" min="1" max="100">
+                                <span class="dim-label">L</span>
+                            </div>
+                            <span class="dim-sep">&times;</span>
+                            <div class="dim-field">
+                                <input type="number" id="dim-y" value="5" step="0.5" min="1" max="50">
+                                <span class="dim-label">H</span>
+                            </div>
+                            <span class="dim-sep">&times;</span>
+                            <div class="dim-field">
+                                <input type="number" id="dim-z" value="8" step="0.5" min="1" max="100">
+                                <span class="dim-label">W</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-row hidden" id="radius-row">
+                        <label>Radius</label>
+                        <div class="dim-fields">
+                            <div class="dim-field" style="flex:1">
+                                <input type="number" id="dome-radius" value="10" step="0.5" min="1" max="100">
+                                <span class="dim-label">m</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Materials -->
+                <div class="control-section" id="materials-section">
+                    <h3 class="section-title">Materials</h3>
+                    <div class="control-row">
+                        <label>Floor</label>
+                        <select id="mat-floor" class="mat-select"><option value="concrete">Concrete</option></select>
+                    </div>
+                    <div class="control-row">
+                        <label>Walls</label>
+                        <select id="mat-walls" class="mat-select"><option value="concrete">Concrete</option></select>
+                    </div>
+                    <div class="control-row">
+                        <label>Ceiling</label>
+                        <select id="mat-ceiling" class="mat-select"><option value="concrete">Concrete</option></select>
+                    </div>
+                    <div class="control-row">
+                        <label>Scattering</label>
+                        <div class="slider-row">
+                            <input type="range" id="scattering" min="0" max="1" step="0.05" value="0.1">
+                            <span class="slider-val" id="scattering-val">0.10</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Positions -->
+                <div class="control-section">
+                    <h3 class="section-title">Placement</h3>
+                    <div class="control-row">
+                        <label><span class="dot source-dot"></span>Source</label>
+                        <div class="pos-fields">
+                            <input type="number" id="src-x" value="2.0" step="0.5">
+                            <input type="number" id="src-y" value="1.5" step="0.5">
+                            <input type="number" id="src-z" value="1.5" step="0.5">
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <label><span class="dot listener-dot"></span>Listener</label>
+                        <div class="pos-fields">
+                            <input type="number" id="lis-x" value="8.0" step="0.5">
+                            <input type="number" id="lis-y" value="1.5" step="0.5">
+                            <input type="number" id="lis-z" value="1.5" step="0.5">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Simulation -->
+                <div class="control-section">
+                    <h3 class="section-title">Simulation</h3>
+                    <div class="control-row">
+                        <label>Rays</label>
+                        <div class="slider-row">
+                            <input type="range" id="ray-count" min="5000" max="200000" step="5000" value="50000">
+                            <span class="slider-val" id="ray-count-val">50k</span>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <label>IR Length</label>
+                        <div class="slider-row">
+                            <input type="range" id="ir-len" min="200" max="3000" step="100" value="1000">
+                            <span class="slider-val" id="ir-len-val">1.0s</span>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="simulate-btn" class="primary-btn">
+                    Simulate
+                </button>
+            </div>
+        </aside>
+    </main>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
