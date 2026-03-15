@@ -28,18 +28,30 @@ struct SimulationParams {
     float listener_radius = 0.5f;
     int sample_rate = 44100;
     float ir_duration_ms = 1000.0f;
+    float air_absorption = 0.001f;
+    float early_reflection_ms = 80.0f;
 };
 
 // Main Entry Point (Dispatcher)
 void run_simulation(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir);
 
 // CPU Backend
-void run_simulation_cpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir);
+void run_simulation_cpu(
+    const SimulationParams& params,
+    const MeshData& mesh,
+    std::vector<float>& ir,
+    std::vector<float>& ir_early,
+    std::vector<float>& ir_late
+);
 
-// GPU Backend
-// We explicitly check if ENABLE_CUDA is defined.
 #ifdef ENABLE_CUDA
-    void run_simulation_gpu(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir);
+void run_simulation_gpu(
+    const SimulationParams& params,
+    const MeshData& mesh,
+    std::vector<float>& ir,
+    std::vector<float>& ir_early,
+    std::vector<float>& ir_late
+);
 #endif
 
 #endif

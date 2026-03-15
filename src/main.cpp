@@ -24,6 +24,8 @@ void print_usage() {
     std::cout << "  --listener-radius <m>    Listener sphere radius (default 0.5)\n";
     std::cout << "  --sr <hz>                Sample rate: 44100, 48000, 96000 (default 44100)\n";
     std::cout << "  --ir-len <ms>            IR duration in milliseconds (default 1000)\n";
+    std::cout << "  --air-absorption <c>     Air absorption coefficient per meter (default 0.001)\n";
+    std::cout << "  --early-ms <ms>          Early reflection cutoff in ms (default 80)\n";
     std::cout << "  --debug                  Outputs a debug OBJ file to visualize rays\n";
 }
 
@@ -33,13 +35,19 @@ float3 parse_dims(const char* arg) {
     return make_float3(x, y, z);
 }
 
-void run_simulation(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir) {
+void run_simulation(
+    const SimulationParams& params,
+    const MeshData& mesh,
+    std::vector<float>& ir,
+    std::vector<float>& ir_early,
+    std::vector<float>& ir_late
+) {
 #ifdef ENABLE_CUDA
     std::cout << "Backend: CUDA GPU" << std::endl;
-    run_simulation_gpu(params, mesh, ir);
+    run_simulation_gpu(params, mesh, ir, ir_early, ir_late);
 #else
     std::cout << "Backend: CPU" << std::endl;
-    run_simulation_cpu(params, mesh, ir);
+    run_simulation_cpu(params, mesh, ir, ir_early, ir_late);
 #endif
 }
 
@@ -66,6 +74,8 @@ int main(int argc, char** argv) {
     params.listener_radius = 0.5f;
     params.sample_rate = 44100;
     params.ir_duration_ms = 1000.0f;
+    params.air_absorption = 0.001f;
+    params.early_reflection_ms = 80.0f;
 
     std::string outfile = "out.wav";
     std::string input_audio_file = "";
@@ -93,6 +103,8 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--listener-radius") == 0 && i + 1 < argc) params.listener_radius = atof(argv[++i]);
         else if (strcmp(argv[i], "--sr") == 0 && i + 1 < argc) params.sample_rate = atoi(argv[++i]);
         else if (strcmp(argv[i], "--ir-len") == 0 && i + 1 < argc) params.ir_duration_ms = atof(argv[++i]);
+        else if (strcmp(argv[i], "--air-absorption") == 0 && i + 1 < argc) params.air_absorption = atof(argv[++i]);
+        else if (strcmp(argv[i], "--early-ms") == 0 && i + 1 < argc) params.early_reflection_ms = atof(argv[++i]);
         else if (strcmp(argv[i], "--help") == 0) { print_usage(); return 0; }
     }
 
@@ -112,7 +124,9 @@ int main(int argc, char** argv) {
               << ", Trans: " << params.material.transmission << "\n";
 
     std::vector<float> impulse_response;
-    run_simulation(params, mesh, impulse_response);
+    std::vector<float> ir_early;
+    std::vector<float> ir_late;
+    run_simulation(params, mesh, impulse_response, ir_early, ir_late);
 
     if (!input_audio_file.empty()) {
         std::cout << "Loading input audio: " << input_audio_file << "...\n";
@@ -130,6 +144,8 @@ int main(int argc, char** argv) {
     else {
         std::cout << "No input audio provided. Saving raw Room Impulse Response.\n";
         write_wav(outfile, impulse_response, params.sample_rate);
+        write_wav("out_early.wav", ir_early, params.sample_rate);
+        write_wav("out_late.wav", ir_late, params.sample_rate);
     }
     
     return 0;
