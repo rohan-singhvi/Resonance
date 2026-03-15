@@ -61,4 +61,8 @@ void run_simulation_gpu(
 );
 #endif
 
+#ifdef ENABLE_METAL
+    void run_simulation_metal(const SimulationParams& params, const MeshData& mesh, std::vector<float>& ir);
+#endif
+
 #endif
