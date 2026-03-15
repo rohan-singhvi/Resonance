@@ -126,6 +126,7 @@ void run_simulation_cpu(
     const SimulationParams& params,
     const MeshData& mesh,
     std::vector<float>& ir,
+    std::vector<std::vector<float>>& ir_bands,
     std::vector<float>& ir_early,
     std::vector<float>& ir_late
 ) {
@@ -135,6 +136,7 @@ void run_simulation_cpu(
     int ir_len = (int)(params.sample_rate * params.ir_duration_ms / 1000.0f);
     int er_cutoff = (int)(params.sample_rate * params.early_reflection_ms / 1000.0f);
     ir.resize(ir_len, 0.0f);
+    ir_bands.assign(NUM_BANDS, std::vector<float>(ir_len, 0.0f));
     ir_early.resize(ir_len, 0.0f);
     ir_late.resize(ir_len, 0.0f);
 
@@ -151,6 +153,12 @@ void run_simulation_cpu(
     tbb::enumerable_thread_specific<std::vector<float>> tls_irs([ir_len]() {
         return std::vector<float>(ir_len, 0.0f);
     });
+    // one TLS slot per band
+    std::vector<tbb::enumerable_thread_specific<std::vector<float>>> tls_bands(
+        NUM_BANDS, tbb::enumerable_thread_specific<std::vector<float>>([ir_len]() {
+            return std::vector<float>(ir_len, 0.0f);
+        })
+    );
     tbb::enumerable_thread_specific<std::vector<float>> tls_early([ir_len]() {
         return std::vector<float>(ir_len, 0.0f);
     });
@@ -167,6 +175,10 @@ void run_simulation_cpu(
         auto& local_ir    = tls_irs.local();
         auto& local_early = tls_early.local();
         auto& local_late  = tls_late.local();
+        // cache per-band locals once per task to avoid repeated hash lookups
+        std::vector<std::vector<float>*> local_bands(NUM_BANDS);
+        for (int b = 0; b < NUM_BANDS; ++b)
+            local_bands[b] = &tls_bands[b].local();
 
         // Iterate over the chunk assigned to this thread
         for (int i = range.begin(); i != range.end(); ++i) {
@@ -186,7 +198,8 @@ void run_simulation_cpu(
             float3 px = params.source_pos;
 
             float dist_traveled = 0.0f;
-            float energy = 1.0f;
+            float energy[NUM_BANDS];
+            for (int b = 0; b < NUM_BANDS; ++b) energy[b] = 1.0f;
 
             // Only record the first 100 rays to save memory/sanity
             bool record_debug = params.debug_rays && (i < 100); 
@@ -272,7 +285,8 @@ void run_simulation_cpu(
 
                 if (min_dist >= 1e19f) break;
 
-                energy *= expf(-params.air_absorption * min_dist);
+                for (int b = 0; b < NUM_BANDS; ++b)
+                    energy[b] *= expf(-params.air_absorption * min_dist);
 
                 float3 to_l = params.listener_pos - px;
                 float t_proj = dot(to_l, dx);
@@ -284,11 +298,17 @@ void run_simulation_cpu(
                         float total_dist = dist_traveled + t_proj;
                         int idx = (int)((total_dist / SPEED_OF_SOUND) * SAMPLE_RATE);
                         if (idx < ir_len) {
-                            local_ir[idx] += energy;
+                            float broadband = 0.0f;
+                            for (int b = 0; b < NUM_BANDS; ++b) {
+                                (*local_bands[b])[idx] += energy[b];
+                                broadband += energy[b];
+                            }
+                            broadband /= NUM_BANDS;
+                            local_ir[idx] += broadband;
                             if (idx < er_cutoff)
-                                local_early[idx] += energy;
+                                local_early[idx] += broadband;
                             else
-                                local_late[idx] += energy;
+                                local_late[idx] += broadband;
                             total_hits++;
                         }
                     }
@@ -310,8 +330,8 @@ void run_simulation_cpu(
                     // transmission loss
                     // if transmission is 0.1, we keep 0.1 energy? 
                     // i think we multiply by transmission coeff itself
-                    energy *= params.material.transmission; 
-                    
+                    for (int b = 0; b < NUM_BANDS; ++b)
+                        energy[b] *= params.material.transmission;
                     // Direction does NOT change (refraction ignored for acoustic approximations)
                 } 
                 else {
@@ -337,8 +357,8 @@ void run_simulation_cpu(
                     // Nudge off wall to prevent self-intersection
                     px = hit_point + nx * 0.001f;
 
-                    // Absorption
-                    energy *= (1.0f - params.material.absorption);
+                    for (int b = 0; b < NUM_BANDS; ++b)
+                        energy[b] *= (1.0f - params.material.absorption[b]);
                 }
 
                 if (record_debug) {
@@ -346,7 +366,10 @@ void run_simulation_cpu(
                     debug_paths.push_back(current_path);
                 }
 
-                if (energy < 0.001f) break;
+                bool all_dead = true;
+                for (int b = 0; b < NUM_BANDS; ++b)
+                    if (energy[b] >= 0.001f) { all_dead = false; break; }
+                if (all_dead) break;
             }
         }
     });
@@ -359,6 +382,11 @@ void run_simulation_cpu(
     for (const auto& buf : tls_irs)
         for (int i = 0; i < ir_len; ++i)
             ir[i] += buf[i];
+
+    for (int b = 0; b < NUM_BANDS; ++b)
+        for (const auto& buf : tls_bands[b])
+            for (int i = 0; i < ir_len; ++i)
+                ir_bands[b][i] += buf[i];
 
     for (const auto& buf : tls_early)
         for (int i = 0; i < ir_len; ++i)

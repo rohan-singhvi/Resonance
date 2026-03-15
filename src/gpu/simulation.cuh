@@ -6,11 +6,13 @@
 #include "cuda_math.h"
 #include "mesh_loader.h"
 
+static constexpr int NUM_BANDS = 7;
+
 struct MaterialParams {
-    float absorption;   // 0.0 to 1.0 (Energy loss on bounce)
-    float scattering;   // 0.0 (Smooth) to 1.0 (Rough/Diffusive)
-    float transmission; // 0.0 (Opaque) to 1.0 (Transparent paper)
-    float thickness;    // Wall thickness in meters (for ray offset)
+    float absorption[NUM_BANDS];
+    float scattering;
+    float transmission;
+    float thickness;
 };
 
 enum RoomType {
