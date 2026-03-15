@@ -285,6 +285,15 @@ void run_simulation_cpu(
 
                 if (min_dist >= 1e19f) break;
 
+                // Look up the per-surface material for this bounce.
+                const MaterialParams* mat_ptr = &params.scene_materials[0];
+                if (params.room_type == MESH && hit_tri_idx >= 0 && !mesh.material_ids.empty()) {
+                    int mid = mesh.material_ids[hit_tri_idx];
+                    if (mid < (int)params.scene_materials.size())
+                        mat_ptr = &params.scene_materials[mid];
+                }
+                const MaterialParams& mat = *mat_ptr;
+
                 for (int b = 0; b < NUM_BANDS; ++b)
                     energy[b] *= expf(-params.air_absorption * min_dist);
 
@@ -320,20 +329,18 @@ void run_simulation_cpu(
                 }
 
                 float rng_trans = rand_float();
-                
+
                 // if random roll < transmission coeff, we go THROUGH the wall
-                if (rng_trans < params.material.transmission) {
+                if (rng_trans < mat.transmission) {
                     // move ray through wall (thickness)
-                    px = px + dx * (min_dist + params.material.thickness);
-                    dist_traveled += min_dist + params.material.thickness;
-                    
+                    px = px + dx * (min_dist + mat.thickness);
+                    dist_traveled += min_dist + mat.thickness;
+
                     // transmission loss
-                    // if transmission is 0.1, we keep 0.1 energy? 
-                    // i think we multiply by transmission coeff itself
                     for (int b = 0; b < NUM_BANDS; ++b)
-                        energy[b] *= params.material.transmission;
+                        energy[b] *= mat.transmission;
                     // Direction does NOT change (refraction ignored for acoustic approximations)
-                } 
+                }
                 else {
                     // reflection (specular + scattering)
                     float3 hit_point = px + dx * min_dist;
@@ -342,15 +349,14 @@ void run_simulation_cpu(
                     // Specular Reflection Vector
                     float d_dot_n = dot(dx, nx);
                     float3 spec_dir = dx - 2.0f * d_dot_n * nx;
-                    
+
                     // Diffuse Reflection Vector (Lambertian)
-                    // We need two random numbers for the hemisphere sampling
                     float r1 = rand_float();
                     float r2 = rand_float();
                     float3 diff_dir = random_cosine_hemisphere(r1, r2, nx);
 
                     // Mix based on Scattering Coefficient
-                    float s = params.material.scattering;
+                    float s = mat.scattering;
                     float3 mixed_dir = spec_dir * (1.0f - s) + diff_dir * s;
                     dx = normalize(mixed_dir);
 
@@ -358,7 +364,7 @@ void run_simulation_cpu(
                     px = hit_point + nx * 0.001f;
 
                     for (int b = 0; b < NUM_BANDS; ++b)
-                        energy[b] *= (1.0f - params.material.absorption[b]);
+                        energy[b] *= (1.0f - mat.absorption[b]);
                 }
 
                 if (record_debug) {

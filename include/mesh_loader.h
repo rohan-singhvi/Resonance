@@ -16,7 +16,7 @@
 struct AABB {
     float3 min;
     float3 max;
-    // ctor - this is initially an invalid box 
+    // ctor - this is initially an invalid box
     // which will be fixed when we fit points into it
     AABB() {
         float inf = std::numeric_limits<float>::infinity();
@@ -102,27 +102,22 @@ struct MeshData {
     std::vector<float3> normals;
     int num_triangles = 0;
     std::vector<BVHNode> bvh_nodes;
+    std::vector<int> material_ids;        // one per triangle, indexes into scene_materials
+    std::vector<std::string> group_names; // unique group names from OBJ 'g' directives
 };
 
 
-// we need a fn to populate bvhnodes
-// to do this, what if we take the centroid of each triangle
-// and use that to build a median-split BVH?
+// centroid of triangle tri_index
 inline float3 get_centroid(const MeshData& mesh, int tri_index) {
-    // get vertices of the triangle
     float3 p0 = mesh.v0[tri_index];
     float3 p1 = mesh.v1[tri_index];
     float3 p2 = mesh.v2[tri_index];
-    // average the inidividual components
-    // to get a "center" point - a centroid
     return make_float3((p0.x + p1.x + p2.x) / 3.0f,
                        (p0.y + p1.y + p2.y) / 3.0f,
                        (p0.z + p1.z + p2.z) / 3.0f);
 }
 
-// we need a function to update the bounding box of a node
-// this means iterating over all triangles in the node
-// and expanding the AABB to include their vertices by using fit()
+// update the bounding box of a node by iterating all its triangles
 inline void update_node_bounds(int node_idx, MeshData& mesh){
     BVHNode& node = mesh.bvh_nodes[node_idx];
     AABB bbox;
@@ -134,112 +129,174 @@ inline void update_node_bounds(int node_idx, MeshData& mesh){
     node.bbox = bbox;
 }
 
-// we need a fn to decide how to split the node
-inline void subdivide(int node_idx, MeshData& mesh){
-    // first lets check if traingle count is small enough to stop
-    if(mesh.bvh_nodes[node_idx].triangle_count() <= 2){
-        // stop subdividing as we are at leaf
-        return;
-    }
-    // we need to get the longest axis of the bounding box
-    // in order to decide where to split (x, y, or z)
-    // i.e. if the box is very wide (X-axis), we should cut it in half along X. 
-    // If it is tall (Y-axis), we cut along Y.
-    float3 extent = mesh.bvh_nodes[node_idx].bbox.max - mesh.bvh_nodes[node_idx].bbox.min;
-    int axis = 0; // Default to X
-    if (extent.y > extent.x) axis = 1;
-    if (extent.z > extent.x && extent.z > extent.y) axis = 2;
-    // given we now have the axis, we must compute the
-    // pivot point - the median along that axis
-    // to do this, we must split based on the centroids
-    // of the triangles in this node
-    float min_c = 1e20f;
-    float max_c = -1e20f;
-    for(int i = mesh.bvh_nodes[node_idx].start; i < mesh.bvh_nodes[node_idx].end; i++){
-        float3 centroid = get_centroid(mesh, i);
-        float val = (axis == 0) ? centroid.x : (axis == 1) ? centroid.y : centroid.z;
-        min_c = std::fmin(min_c, val);
-        max_c = std::fmax(max_c, val);
-    }
-    float split_pos = (min_c + max_c) * 0.5f;
+// SAH BVH helpers
 
-    // partition triangles based on split_pos
-    int i = mesh.bvh_nodes[node_idx].start;
-    int j = mesh.bvh_nodes[node_idx].end - 1;
-    while(i <= j){
-        float3 centroid = get_centroid(mesh, i);
-        float val = (axis == 0) ? centroid.x : (axis == 1) ? centroid.y : centroid.z;
-        if(val < split_pos){
+inline float aabb_surface_area(const AABB& b) {
+    float3 d = b.max - b.min;
+    return 2.0f * (d.x*d.y + d.y*d.z + d.z*d.x);
+}
+
+inline AABB merge_aabb(const AABB& a, const AABB& b) {
+    AABB r;
+    r.min = make_float3(std::fmin(a.min.x, b.min.x), std::fmin(a.min.y, b.min.y), std::fmin(a.min.z, b.min.z));
+    r.max = make_float3(std::fmax(a.max.x, b.max.x), std::fmax(a.max.y, b.max.y), std::fmax(a.max.z, b.max.z));
+    return r;
+}
+
+// Binned SAH subdivide — replaces the old median-split.
+// Uses 16 bins per axis, evaluates all 3 axes, picks the split
+// with the lowest SAH cost. Falls back to leaf when no beneficial
+// split exists or the node already has <= 2 triangles.
+inline void subdivide(int node_idx, MeshData& mesh) {
+    // Read start/end before any push_back that would invalidate the reference.
+    int start = mesh.bvh_nodes[node_idx].start;
+    int end   = mesh.bvh_nodes[node_idx].end;
+    int count = end - start;
+
+    if (count <= 2) return;
+
+    const int NUM_BINS = 16;
+    float best_cost  = (float)count; // leaf cost
+    int   best_axis  = -1;
+    float best_split = 0.0f;
+
+    float parent_sa = aabb_surface_area(mesh.bvh_nodes[node_idx].bbox);
+    if (parent_sa < 1e-10f) return; // degenerate flat geometry
+
+    for (int axis = 0; axis < 3; ++axis) {
+        // centroid range along this axis
+        float cmin =  1e20f, cmax = -1e20f;
+        for (int i = start; i < end; ++i) {
+            float3 c = get_centroid(mesh, i);
+            float val = (axis == 0) ? c.x : (axis == 1) ? c.y : c.z;
+            cmin = std::fmin(cmin, val);
+            cmax = std::fmax(cmax, val);
+        }
+        if (cmax - cmin < 1e-6f) continue;
+
+        float bin_size = (cmax - cmin) / NUM_BINS;
+
+        int  bin_count[NUM_BINS] = {};
+        AABB bin_aabb[NUM_BINS];
+
+        for (int i = start; i < end; ++i) {
+            float3 c = get_centroid(mesh, i);
+            float val = (axis == 0) ? c.x : (axis == 1) ? c.y : c.z;
+            int bin = (int)((val - cmin) / bin_size);
+            if (bin >= NUM_BINS) bin = NUM_BINS - 1;
+            bin_count[bin]++;
+            bin_aabb[bin].fit(mesh.v0[i]);
+            bin_aabb[bin].fit(mesh.v1[i]);
+            bin_aabb[bin].fit(mesh.v2[i]);
+        }
+
+        // prefix (left→right) and suffix (right→left) sweeps
+        AABB left_aabb[NUM_BINS], right_aabb[NUM_BINS];
+        int  left_count[NUM_BINS], right_count[NUM_BINS];
+
+        {
+            AABB accum; bool accum_valid = false; int accum_count = 0;
+            for (int b = 0; b < NUM_BINS; ++b) {
+                accum_count += bin_count[b];
+                if (bin_count[b] > 0) {
+                    accum = accum_valid ? merge_aabb(accum, bin_aabb[b]) : bin_aabb[b];
+                    accum_valid = true;
+                }
+                left_aabb[b]  = accum;
+                left_count[b] = accum_count;
+            }
+        }
+        {
+            AABB accum; bool accum_valid = false; int accum_count = 0;
+            for (int b = NUM_BINS - 1; b >= 0; --b) {
+                accum_count += bin_count[b];
+                if (bin_count[b] > 0) {
+                    accum = accum_valid ? merge_aabb(accum, bin_aabb[b]) : bin_aabb[b];
+                    accum_valid = true;
+                }
+                right_aabb[b]  = accum;
+                right_count[b] = accum_count;
+            }
+        }
+
+        // evaluate split at each bin boundary (between bin b and b+1)
+        for (int b = 0; b < NUM_BINS - 1; ++b) {
+            int lc = left_count[b];
+            int rc = right_count[b + 1];
+            if (lc == 0 || rc == 0) continue;
+            float cost = (aabb_surface_area(left_aabb[b])  / parent_sa) * lc
+                       + (aabb_surface_area(right_aabb[b+1]) / parent_sa) * rc;
+            if (cost < best_cost) {
+                best_cost  = cost;
+                best_axis  = axis;
+                best_split = cmin + (b + 1) * bin_size;
+            }
+        }
+    }
+
+    // No split better than the leaf cost — keep this node as a leaf.
+    if (best_axis == -1) return;
+
+    // Partition triangles around best_split on best_axis.
+    int i = start, j = end - 1;
+    while (i <= j) {
+        float3 c = get_centroid(mesh, i);
+        float val = (best_axis == 0) ? c.x : (best_axis == 1) ? c.y : c.z;
+        if (val < best_split) {
             i++;
         } else {
-            // swap triangles at i and j
-            std::swap(mesh.v0[i], mesh.v0[j]);
-            std::swap(mesh.v1[i], mesh.v1[j]);
-            std::swap(mesh.v2[i], mesh.v2[j]);
+            std::swap(mesh.v0[i],      mesh.v0[j]);
+            std::swap(mesh.v1[i],      mesh.v1[j]);
+            std::swap(mesh.v2[i],      mesh.v2[j]);
             std::swap(mesh.normals[i], mesh.normals[j]);
+            if (!mesh.material_ids.empty())
+                std::swap(mesh.material_ids[i], mesh.material_ids[j]);
             j--;
         }
     }
     int split_index = i;
+    if (split_index == start || split_index == end) return;
 
-    // (If all centroids are identical, we might get 0 on one side)
-    if (split_index == mesh.bvh_nodes[node_idx].start || split_index == mesh.bvh_nodes[node_idx].end) {
-        return; // Failed to split (overlapping geometry), make it a leaf.
-    }
-
-    // child nodes
-    int left_idx = mesh.bvh_nodes.size();
+    // Allocate child nodes — do this AFTER partitioning, and read parent
+    // fields from local vars (the push_back may reallocate the vector).
+    int left_idx  = (int)mesh.bvh_nodes.size();
     mesh.bvh_nodes.push_back(BVHNode());
-    int right_idx = mesh.bvh_nodes.size();
+    int right_idx = (int)mesh.bvh_nodes.size();
     mesh.bvh_nodes.push_back(BVHNode());
 
-    // setup left child
-    BVHNode& left_node = mesh.bvh_nodes[left_idx];
-    left_node.start = mesh.bvh_nodes[node_idx].start;
-    left_node.end = split_index;
+    mesh.bvh_nodes[left_idx].start  = start;
+    mesh.bvh_nodes[left_idx].end    = split_index;
+    mesh.bvh_nodes[right_idx].start = split_index;
+    mesh.bvh_nodes[right_idx].end   = end;
 
-    // setup right child
-    BVHNode& right_node = mesh.bvh_nodes[right_idx];
-    right_node.start = split_index;
-    right_node.end = mesh.bvh_nodes[node_idx].end;
-
-    // update parent node to point to children
-    mesh.bvh_nodes[node_idx].left_node_index = left_idx;
+    mesh.bvh_nodes[node_idx].left_node_index  = left_idx;
     mesh.bvh_nodes[node_idx].right_node_index = right_idx;
 
-    // update bounds for children
-    update_node_bounds(left_idx, mesh);
+    update_node_bounds(left_idx,  mesh);
     update_node_bounds(right_idx, mesh);
 
-    // recursively subdivide children
-    subdivide(left_idx, mesh);
+    subdivide(left_idx,  mesh);
     subdivide(right_idx, mesh);
 }
 
-// built the BVH for the mesh so when we raytrace, we don't have to check every triangle
+// Build the BVH for the mesh so when we raytrace, we don't have to check every triangle.
 inline void build_bvh(MeshData& mesh) {
     if (mesh.num_triangles == 0) return;
 
     std::cout << "Building BVH for " << mesh.num_triangles << " triangles..." << std::endl;
-    // clear the old nodes if any
     mesh.bvh_nodes.clear();
-    // create root
     BVHNode root;
     root.start = 0;
-    root.end = mesh.num_triangles; // The root owns everything
-    root.left_node_index = -1;
+    root.end = mesh.num_triangles;
+    root.left_node_index  = -1;
     root.right_node_index = -1;
-    
-    // Add root to the list (it will be index 0)
     mesh.bvh_nodes.push_back(root);
-    // we then need to update its bounds
     update_node_bounds(0, mesh);
-    // and recursively split it
     subdivide(0, mesh);
     std::cout << "BVH Built. Total Nodes: " << mesh.bvh_nodes.size() << std::endl;
 }
 
-// dependency-free OBJ loader
+// Dependency-free OBJ loader with group ('g') parsing.
 inline MeshData load_obj(const std::string& filename) {
     MeshData mesh;
     std::vector<float3> temp_vertices;
@@ -250,19 +307,38 @@ inline MeshData load_obj(const std::string& filename) {
         exit(1);
     }
 
+    // current group — default name before any 'g' directive
+    std::string current_group = "default";
+    int current_group_idx = 0;
+    mesh.group_names.push_back(current_group);
+
     std::string line;
     while (std::getline(file, line)) {
         std::stringstream ss(line);
         std::string prefix;
         ss >> prefix;
 
-        if (prefix == "v") {
+        if (prefix == "g") {
+            std::string gname;
+            ss >> gname;
+            if (gname.empty()) gname = "default";
+            // find or insert group
+            auto it = std::find(mesh.group_names.begin(), mesh.group_names.end(), gname);
+            if (it == mesh.group_names.end()) {
+                current_group_idx = (int)mesh.group_names.size();
+                mesh.group_names.push_back(gname);
+            } else {
+                current_group_idx = (int)(it - mesh.group_names.begin());
+            }
+            current_group = gname;
+        }
+        else if (prefix == "v") {
             float x, y, z;
             ss >> x >> y >> z;
             temp_vertices.push_back(make_float3(x, y, z));
-        } 
+        }
         else if (prefix == "f") {
-            // extremely basic face parsing "f v1 v2 v3" or "f v1//n1 v2//n2 v3//n3"
+            // basic face parsing: "f v1 v2 v3" or "f v1//n1 v2//n2 v3//n3" etc.
             std::string segment;
             int v_indices[3];
             int i = 0;
@@ -274,10 +350,9 @@ inline MeshData load_obj(const std::string& filename) {
             }
 
             if (i == 3) {
-                // check bounds
-                if(v_indices[0] < temp_vertices.size() && 
-                   v_indices[1] < temp_vertices.size() && 
-                   v_indices[2] < temp_vertices.size()) 
+                if(v_indices[0] < (int)temp_vertices.size() &&
+                   v_indices[1] < (int)temp_vertices.size() &&
+                   v_indices[2] < (int)temp_vertices.size())
                 {
                     float3 p0 = temp_vertices[v_indices[0]];
                     float3 p1 = temp_vertices[v_indices[1]];
@@ -287,16 +362,15 @@ inline MeshData load_obj(const std::string& filename) {
                     mesh.v1.push_back(p1);
                     mesh.v2.push_back(p2);
                     mesh.num_triangles++;
+                    mesh.material_ids.push_back(current_group_idx);
 
-                    // calculate face normal
+                    // face normal
                     float3 e1 = p1 - p0;
                     float3 e2 = p2 - p0;
-                    
                     float3 n;
                     n.x = e1.y * e2.z - e1.z * e2.y;
                     n.y = e1.z * e2.x - e1.x * e2.z;
                     n.z = e1.x * e2.y - e1.y * e2.x;
-                    
                     float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
                     if (len > 1e-6f) {
                         n.x /= len; n.y /= len; n.z /= len;
@@ -306,8 +380,12 @@ inline MeshData load_obj(const std::string& filename) {
             }
         }
     }
-    
-    std::cout << "Loaded " << mesh.num_triangles << " triangles from " << filename << std::endl;
+
+    std::cout << "Loaded " << mesh.num_triangles << " triangles from " << filename;
+    if (mesh.group_names.size() > 1 || mesh.group_names[0] != "default") {
+        std::cout << " (" << mesh.group_names.size() << " groups)";
+    }
+    std::cout << std::endl;
     return mesh;
 }
 

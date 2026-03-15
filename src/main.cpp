@@ -2,6 +2,8 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <algorithm>
+#include <sstream>
 #include "simulation.h"
 #include "convolution.h"
 #include "wav_io.h"
@@ -32,6 +34,7 @@ void print_usage() {
     std::cout << "  --air-absorption <c>     Air absorption coefficient per meter (default 0.001)\n";
     std::cout << "  --early-ms <ms>          Early reflection cutoff in ms (default 80)\n";
     std::cout << "  --debug                  Outputs a debug OBJ file to visualize rays\n";
+    std::cout << "  --mat-assign <assignments>  Per-group material: \"floor=carpet_thick,walls=concrete\"\n";
 }
 
 float3 parse_dims(const char* arg) {
@@ -121,6 +124,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--ir-len") == 0 && i + 1 < argc) params.ir_duration_ms = atof(argv[++i]);
         else if (strcmp(argv[i], "--air-absorption") == 0 && i + 1 < argc) params.air_absorption = atof(argv[++i]);
         else if (strcmp(argv[i], "--early-ms") == 0 && i + 1 < argc) params.early_reflection_ms = atof(argv[++i]);
+        else if (strcmp(argv[i], "--mat-assign") == 0 && i + 1 < argc) params.mat_assign = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) { print_usage(); return 0; }
     }
 
@@ -134,9 +138,49 @@ int main(int argc, char** argv) {
         build_bvh(mesh);
     }
 
+    // Build scene_materials: one entry per OBJ group (or just [global] for non-mesh).
+    if (params.room_type == MESH && !mesh.group_names.empty()) {
+        params.scene_materials.assign(mesh.group_names.size(), params.material);
+    } else {
+        params.scene_materials.push_back(params.material);
+    }
+
+    // Process --mat-assign "floor=carpet_thick,walls=concrete"
+    if (!params.mat_assign.empty() && !mesh.group_names.empty()) {
+        std::stringstream ss(params.mat_assign);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            size_t eq = token.find('=');
+            if (eq == std::string::npos) continue;
+            std::string group  = token.substr(0, eq);
+            std::string preset = token.substr(eq + 1);
+            auto it = std::find(mesh.group_names.begin(), mesh.group_names.end(), group);
+            if (it == mesh.group_names.end()) {
+                std::cerr << "Warning: group '" << group << "' not found in mesh\n";
+                continue;
+            }
+            int idx = (int)(it - mesh.group_names.begin());
+            if (!MaterialPresets::lookup(preset.c_str(), params.scene_materials[idx].absorption)) {
+                std::cerr << "Warning: unknown material preset '" << preset << "'\n";
+            }
+        }
+    }
+
+    // Print group -> material mapping for mesh rooms.
+    if (params.room_type == MESH && !mesh.group_names.empty()) {
+        std::cout << "Surface material assignments:\n";
+        for (int g = 0; g < (int)mesh.group_names.size(); ++g) {
+            float mean_abs = 0.0f;
+            for (int b = 0; b < NUM_BANDS; ++b)
+                mean_abs += params.scene_materials[g].absorption[b];
+            mean_abs /= NUM_BANDS;
+            std::cout << "  group[" << g << "] '" << mesh.group_names[g]
+                      << "' -> mean absorption " << mean_abs << "\n";
+        }
+    }
+
     std::cout << "Starting Simulation (" << params.num_rays << " rays)...\n";
-    std::cout << "Mat Props -> Abs: " << params.material.absorption
-              << ", Scat: " << params.material.scattering
+    std::cout << "Mat Props -> Scat: " << params.material.scattering
               << ", Trans: " << params.material.transmission << "\n";
 
     std::vector<float> impulse_response;

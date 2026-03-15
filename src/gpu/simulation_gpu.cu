@@ -155,7 +155,9 @@ __global__ void ray_trace_kernel(
     float listener_radius,
     int sample_rate,
     float air_absorption,
-    MaterialParams mat,
+    MaterialParams* d_materials,
+    int* d_material_ids,
+    int num_materials,
     float3* d_v0, float3* d_v1, float3* d_v2, float3* d_normals, int num_triangles,
     BVHNode* d_bvh_nodes
 ) {
@@ -172,6 +174,7 @@ __global__ void ray_trace_kernel(
     for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
         float min_dist = 1e20f;
         float3 nx = make_float3(0.0f, 0.0f, 0.0f);
+        int hit_tri_idx = -1;
 
         //  shoebox
         if (room_type == SHOEBOX) {
@@ -249,7 +252,9 @@ __global__ void ray_trace_kernel(
                         float3 v2 = d_v2[i];
                         float3 tri_norm = d_normals[i];
 
+                        float prev_min = min_dist;
                         intersect_triangle(px, dx, v0, v1, v2, tri_norm, min_dist, nx);
+                        if (min_dist < prev_min) hit_tri_idx = i;
                     }
                 } 
                 // add children to stack
@@ -261,6 +266,11 @@ __global__ void ray_trace_kernel(
         }
         
         if (min_dist >= 1e19f) break;
+
+        // Per-surface material lookup.
+        const MaterialParams mat = (room_type == MESH && hit_tri_idx >= 0 && d_material_ids != nullptr)
+            ? d_materials[d_material_ids[hit_tri_idx]]
+            : d_materials[0];
 
         for (int b = 0; b < NUM_BANDS; ++b)
             energy[b] *= expf(-air_absorption * min_dist);
@@ -298,7 +308,8 @@ __global__ void ray_trace_kernel(
             // PASS THROUGH
             px = px + dx * (min_dist + mat.thickness);
             dist_traveled += min_dist + mat.thickness;
-            energy *= mat.transmission; 
+            for (int b = 0; b < NUM_BANDS; ++b)
+                energy[b] *= mat.transmission;
             // Direction 'dx' stays same
         } 
         else {
@@ -359,10 +370,12 @@ void run_simulation_gpu(
 
     float3 *d_pos, *d_dir, *d_v0 = nullptr, *d_v1 = nullptr, *d_v2 = nullptr, *d_normals = nullptr;
     float *d_ir_bands = nullptr;
-    
+    MaterialParams* d_materials = nullptr;
+    int* d_material_ids = nullptr;
+
     cudaMalloc(&d_pos, N * sizeof(float3));
     cudaMalloc(&d_dir, N * sizeof(float3));
-    
+
     cudaMemcpy(d_pos, h_pos.data(), N * sizeof(float3), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dir, h_dir.data(), N * sizeof(float3), cudaMemcpyHostToDevice);
 
@@ -380,6 +393,19 @@ void run_simulation_gpu(
 
     BVHNode* d_bvh_nodes = nullptr;
 
+    // Upload materials array (always at least one entry).
+    {
+        const std::vector<MaterialParams>& mats = params.scene_materials;
+        int num_mats = (int)mats.size();
+        if (num_mats == 0) num_mats = 1; // safety
+        cudaMalloc(&d_materials, num_mats * sizeof(MaterialParams));
+        if (!mats.empty()) {
+            cudaMemcpy(d_materials, mats.data(), num_mats * sizeof(MaterialParams), cudaMemcpyHostToDevice);
+        } else {
+            cudaMemcpy(d_materials, &params.material, sizeof(MaterialParams), cudaMemcpyHostToDevice);
+        }
+    }
+
     // mesh buffer (if needed)
     if (params.room_type == MESH) {
         int t_count = mesh.num_triangles;
@@ -387,7 +413,7 @@ void run_simulation_gpu(
         cudaMalloc(&d_v1, t_count * sizeof(float3));
         cudaMalloc(&d_v2, t_count * sizeof(float3));
         cudaMalloc(&d_normals, t_count * sizeof(float3));
-        
+
         cudaMemcpy(d_v0, mesh.v0.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
         cudaMemcpy(d_v1, mesh.v1.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
         cudaMemcpy(d_v2, mesh.v2.data(), t_count * sizeof(float3), cudaMemcpyHostToDevice);
@@ -397,6 +423,10 @@ void run_simulation_gpu(
             cudaMalloc(&d_bvh_nodes, node_size);
             cudaMemcpy(d_bvh_nodes, mesh.bvh_nodes.data(), node_size, cudaMemcpyHostToDevice);
             printf("Copied %lu BVH nodes to GPU\n", mesh.bvh_nodes.size());
+        }
+        if (!mesh.material_ids.empty()) {
+            cudaMalloc(&d_material_ids, t_count * sizeof(int));
+            cudaMemcpy(d_material_ids, mesh.material_ids.data(), t_count * sizeof(int), cudaMemcpyHostToDevice);
         }
     }
     int threads = 256;
@@ -417,7 +447,9 @@ void run_simulation_gpu(
         params.listener_radius,
         params.sample_rate,
         params.air_absorption,
-        params.material,
+        d_materials,
+        d_material_ids,
+        (int)params.scene_materials.size(),
         d_v0, d_v1, d_v2, d_normals, mesh.num_triangles,
         d_bvh_nodes
     );
@@ -457,6 +489,8 @@ void run_simulation_gpu(
     cudaFree(d_ir_bands);
     cudaFree(d_ir_early);
     cudaFree(d_ir_late);
+    if(d_materials)   cudaFree(d_materials);
+    if(d_material_ids) cudaFree(d_material_ids);
     if(d_v0) cudaFree(d_v0);
     if(d_v1) cudaFree(d_v1);
     if(d_v2) cudaFree(d_v2);
