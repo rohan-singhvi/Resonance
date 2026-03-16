@@ -1,11 +1,12 @@
 import { RoomScene } from './scene.js';
-import { decodeWav, playIR, playConvolved, stop } from './audio.js';
+import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js';
 
 const API_BASE = window.location.origin + '/resonance/api';
 
 // ── State ──────────────────────────────────────────────────────
 let scene;
 let currentIRBuffer = null;
+let userAudioBuffer = null;
 let simulating = false;
 
 const MATERIAL_LABELS = {
@@ -209,6 +210,26 @@ function bindEvents() {
     $('#play-convolved').addEventListener('click', () => {
         if (currentIRBuffer) playConvolved(currentIRBuffer);
     });
+    $('#play-user').addEventListener('click', () => {
+        if (currentIRBuffer && userAudioBuffer) playUserConvolved(userAudioBuffer, currentIRBuffer);
+    });
+
+    // Audio upload
+    $('#audio-upload').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            userAudioBuffer = await decodeAudioFile(arrayBuffer);
+            const name = file.name.length > 12 ? file.name.slice(0, 10) + '..' : file.name;
+            $('#user-audio-name').textContent = name;
+            $('#play-user').style.display = '';
+            if (currentIRBuffer) $('#play-user').disabled = false;
+        } catch (err) {
+            console.error('Audio decode failed:', err);
+            alert('Could not decode audio file. Try a WAV or MP3.');
+        }
+    });
 }
 
 function clearPresetHighlight() {
@@ -304,6 +325,8 @@ async function displayResults(data) {
         currentIRBuffer = await decodeWav(data.wav_base64);
         $('#play-ir').disabled = false;
         $('#play-convolved').disabled = false;
+        if (userAudioBuffer) $('#play-user').disabled = false;
+        $('#upload-audio-label').classList.remove('disabled');
 
         // Download link
         const blob = base64ToBlob(data.wav_base64, 'audio/wav');

@@ -40,6 +40,34 @@ export function playIR(irBuffer) {
     src.onended = () => { currentSource = null; };
 }
 
+/** Decode an ArrayBuffer (from file upload) into an AudioBuffer. */
+export async function decodeAudioFile(arrayBuffer) {
+    const ctx = getCtx();
+    return ctx.decodeAudioData(arrayBuffer);
+}
+
+/** Play a user-uploaded audio buffer convolved with the IR. */
+export function playUserConvolved(userBuffer, irBuffer) {
+    stop();
+    const ctx = getCtx();
+
+    const src = ctx.createBufferSource();
+    src.buffer = userBuffer;
+
+    const convolver = ctx.createConvolver();
+    convolver.buffer = irBuffer;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 1.5;
+
+    src.connect(convolver);
+    convolver.connect(gain);
+    gain.connect(ctx.destination);
+    src.start();
+    currentSource = src;
+    src.onended = () => { currentSource = null; };
+}
+
 /**
  * Generate a short clap (noise burst) convolved with the IR.
  * This lets users "hear" the room — the clap excites the impulse response.
