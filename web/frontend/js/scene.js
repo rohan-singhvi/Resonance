@@ -20,10 +20,12 @@ const MATERIAL_COLORS = {
 };
 
 export class RoomScene {
-    constructor(canvas) {
+    constructor(canvas, onDrag) {
         this.canvas = canvas;
         this.rayLines = [];
+        this.onDrag = onDrag || null;
         this._init();
+        this._initDrag();
         this._animate = this._animate.bind(this);
         this._animate();
         window.addEventListener('resize', () => this._resize());
@@ -110,6 +112,90 @@ export class RoomScene {
         this.camera.aspect = w / h;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(w, h);
+    }
+
+    _initDrag() {
+        this._raycaster = new THREE.Raycaster();
+        this._mouse = new THREE.Vector2();
+        this._dragTarget = null;
+        this._dragPlane = new THREE.Plane();
+        this._intersection = new THREE.Vector3();
+
+        // Make spheres bigger hit targets
+        const hitGeo = new THREE.SphereGeometry(0.4, 8, 8);
+        const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+
+        this._sourceHit = new THREE.Mesh(hitGeo, hitMat);
+        this.sourceMesh.add(this._sourceHit);
+
+        this._listenerHit = new THREE.Mesh(hitGeo.clone(), hitMat.clone());
+        this.listenerMesh.add(this._listenerHit);
+
+        this.canvas.addEventListener('pointerdown', (e) => this._onPointerDown(e));
+        this.canvas.addEventListener('pointermove', (e) => this._onPointerMove(e));
+        this.canvas.addEventListener('pointerup', () => this._onPointerUp());
+        this.canvas.addEventListener('pointerleave', () => this._onPointerUp());
+    }
+
+    _getNDC(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        this._mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this._mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    _onPointerDown(e) {
+        this._getNDC(e);
+        this._raycaster.setFromCamera(this._mouse, this.camera);
+        const hits = this._raycaster.intersectObjects([this._sourceHit, this._listenerHit]);
+        if (hits.length === 0) return;
+
+        const hit = hits[0].object;
+        this._dragTarget = hit === this._sourceHit ? 'source' : 'listener';
+        const mesh = this._dragTarget === 'source' ? this.sourceMesh : this.listenerMesh;
+
+        // Drag plane: horizontal (y = mesh.y), facing camera
+        this._dragPlane.setFromNormalAndCoplanarPoint(
+            new THREE.Vector3(0, 1, 0),
+            mesh.position
+        );
+
+        this.controls.enabled = false;
+        this.canvas.style.cursor = 'grabbing';
+    }
+
+    _onPointerMove(e) {
+        // Hover cursor
+        if (!this._dragTarget) {
+            this._getNDC(e);
+            this._raycaster.setFromCamera(this._mouse, this.camera);
+            const hits = this._raycaster.intersectObjects([this._sourceHit, this._listenerHit]);
+            this.canvas.style.cursor = hits.length > 0 ? 'grab' : '';
+            return;
+        }
+
+        this._getNDC(e);
+        this._raycaster.setFromCamera(this._mouse, this.camera);
+        if (!this._raycaster.ray.intersectPlane(this._dragPlane, this._intersection)) return;
+
+        const mesh = this._dragTarget === 'source' ? this.sourceMesh : this.listenerMesh;
+        mesh.position.x = this._intersection.x;
+        mesh.position.z = this._intersection.z;
+
+        if (this.onDrag) {
+            const p = mesh.position;
+            this.onDrag(this._dragTarget, [
+                Math.round(p.x * 10) / 10,
+                Math.round(p.y * 10) / 10,
+                Math.round(p.z * 10) / 10,
+            ]);
+        }
+    }
+
+    _onPointerUp() {
+        if (!this._dragTarget) return;
+        this._dragTarget = null;
+        this.controls.enabled = true;
+        this.canvas.style.cursor = '';
     }
 
     _animate() {

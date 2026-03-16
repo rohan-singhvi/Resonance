@@ -1,5 +1,5 @@
-import { RoomScene } from './scene.js';
-import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js';
+import { RoomScene } from './scene.js?v=2';
+import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js?v=2';
 
 const API_BASE = window.location.origin + '/resonance/api';
 
@@ -34,12 +34,24 @@ const $$ = (s) => document.querySelectorAll(s);
 
 // ── Init ───────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    scene = new RoomScene($('#viewport'));
+    scene = new RoomScene($('#viewport'), onSceneDrag);
     populateMaterialSelects();
     populatePresets();
     bindEvents();
     syncSceneFromUI();
 });
+
+function onSceneDrag(which, pos) {
+    if (which === 'source') {
+        $('#src-x').value = pos[0];
+        $('#src-y').value = pos[1];
+        $('#src-z').value = pos[2];
+    } else {
+        $('#lis-x').value = pos[0];
+        $('#lis-y').value = pos[1];
+        $('#lis-z').value = pos[2];
+    }
+}
 
 function populateMaterialSelects() {
     for (const sel of $$('.mat-select')) {
