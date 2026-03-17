@@ -1,5 +1,5 @@
-import { RoomScene } from './scene.js?v=2';
-import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js?v=2';
+import { RoomScene } from './scene.js?v=6';
+import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js?v=6';
 
 const API_BASE = window.location.origin + '/resonance/api';
 
@@ -7,6 +7,7 @@ const API_BASE = window.location.origin + '/resonance/api';
 let scene;
 let currentIRBuffer = null;
 let userAudioBuffer = null;
+let customObjText = null;
 let simulating = false;
 
 const MATERIAL_LABELS = {
@@ -53,13 +54,23 @@ function onSceneDrag(which, pos) {
     }
 }
 
+function resetResults() {
+    stop();
+    currentIRBuffer = null;
+    scene.clearRays();
+    $('#results-strip').classList.add('hidden');
+    $('#play-ir').disabled = true;
+    $('#play-convolved').disabled = true;
+    $('#play-user').disabled = true;
+    $('#upload-audio-label').classList.add('disabled');
+}
+
 function populateMaterialSelects() {
     for (const sel of $$('.mat-select')) {
         sel.innerHTML = MATERIALS.map(m =>
             `<option value="${m}">${MATERIAL_LABELS[m]}</option>`
         ).join('');
     }
-    // defaults
     $('#mat-floor').value = 'concrete';
     $('#mat-walls').value = 'concrete';
     $('#mat-ceiling').value = 'concrete';
@@ -82,27 +93,26 @@ function applyPreset(key) {
     const p = ROOM_PRESETS[key];
     if (!p) return;
 
-    // Highlight active preset
+    resetResults();
+    customObjText = null;
+    $('#obj-upload-name').textContent = '';
+
     for (const btn of $$('.preset-btn')) {
         btn.classList.toggle('active', btn.dataset.preset === key);
     }
 
-    // Room type = shoebox
     setRoomType('shoebox');
 
-    // Dims
     $('#dim-x').value = p.dims[0];
     $('#dim-y').value = p.dims[1];
     $('#dim-z').value = p.dims[2];
 
-    // Materials
     if (p.materials) {
         $('#mat-floor').value = p.materials.floor || 'concrete';
         $('#mat-walls').value = p.materials.walls || 'concrete';
         $('#mat-ceiling').value = p.materials.ceiling || 'concrete';
     }
 
-    // Positions
     $('#src-x').value = p.source[0];
     $('#src-y').value = p.source[1];
     $('#src-z').value = p.source[2];
@@ -110,7 +120,6 @@ function applyPreset(key) {
     $('#lis-y').value = p.listener[1];
     $('#lis-z').value = p.listener[2];
 
-    // Rays
     if (p.rays) {
         $('#ray-count').value = p.rays;
         $('#ray-count-val').textContent = formatRayCount(p.rays);
@@ -123,12 +132,16 @@ function setRoomType(type) {
     for (const btn of $$('.seg-btn')) {
         btn.classList.toggle('active', btn.dataset.room === type);
     }
-    $('#dims-row').classList.toggle('hidden', type === 'dome');
-    $('#radius-row').classList.toggle('hidden', type !== 'dome');
-    $('#materials-section').style.display = type === 'dome' ? 'none' : '';
+    const isMesh = type === 'mesh';
+    const isDome = type === 'dome';
+    $('#dims-row').classList.toggle('hidden', isDome || isMesh);
+    $('#radius-row').classList.toggle('hidden', !isDome);
+    $('#materials-section').style.display = (isDome || isMesh) ? 'none' : '';
+    $('#obj-upload-row').classList.toggle('hidden', !isMesh);
 }
 
 function getRoomType() {
+    if (customObjText) return 'mesh';
     const active = $('.seg-btn.active');
     return active ? active.dataset.room : 'shoebox';
 }
@@ -175,16 +188,15 @@ function formatRayCount(n) {
 
 // ── Event binding ──────────────────────────────────────────────
 function bindEvents() {
-    // Room type toggle
     for (const btn of $$('.seg-btn')) {
         btn.addEventListener('click', () => {
             setRoomType(btn.dataset.room);
+            if (btn.dataset.room !== 'mesh') customObjText = null;
             clearPresetHighlight();
             syncSceneFromUI();
         });
     }
 
-    // Dims, positions, materials — live update the 3D view
     const liveInputs = [
         '#dim-x', '#dim-y', '#dim-z', '#dome-radius',
         '#src-x', '#src-y', '#src-z',
@@ -209,10 +221,7 @@ function bindEvents() {
         $('#scattering-val').textContent = parseFloat(e.target.value).toFixed(2);
     });
 
-    // Camera reset
     $('#reset-cam').addEventListener('click', () => scene.resetCamera());
-
-    // Simulate
     $('#simulate-btn').addEventListener('click', () => runSimulation());
 
     // Audio
@@ -242,6 +251,33 @@ function bindEvents() {
             alert('Could not decode audio file. Try a WAV or MP3.');
         }
     });
+
+    // OBJ upload
+    $('#obj-upload').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        customObjText = await file.text();
+        const name = file.name.length > 20 ? file.name.slice(0, 18) + '..' : file.name;
+        $('#obj-upload-name').textContent = name;
+
+        clearPresetHighlight();
+        setRoomType('mesh');
+
+        const info = scene.loadMesh(customObjText);
+        // Place source/listener at sensible defaults inside the mesh
+        const c = info.center;
+        const s = info.size;
+        const srcPos = [c.x - s.x * 0.2, c.y, c.z];
+        const lisPos = [c.x + s.x * 0.2, c.y, c.z];
+        scene.setSource(srcPos);
+        scene.setListener(lisPos);
+        $('#src-x').value = Math.round(srcPos[0] * 10) / 10;
+        $('#src-y').value = Math.round(srcPos[1] * 10) / 10;
+        $('#src-z').value = Math.round(srcPos[2] * 10) / 10;
+        $('#lis-x').value = Math.round(lisPos[0] * 10) / 10;
+        $('#lis-y').value = Math.round(lisPos[1] * 10) / 10;
+        $('#lis-z').value = Math.round(lisPos[2] * 10) / 10;
+    });
 }
 
 function clearPresetHighlight() {
@@ -250,6 +286,7 @@ function clearPresetHighlight() {
 
 function syncSceneFromUI() {
     const type = getRoomType();
+    if (type === 'mesh' && customObjText) return; // mesh is already loaded
     const dims = getDims();
     const mats = getMaterials();
     scene.updateRoom(type, dims, mats);
@@ -282,9 +319,10 @@ async function runSimulation() {
         debug_rays: true,
     };
 
-    // Per-surface materials for shoebox
     if (type === 'shoebox') {
         body.materials = getMaterials();
+    } else if (type === 'mesh' && customObjText) {
+        body.obj_data = customObjText;
     } else {
         body.absorption = 0.1;
     }
@@ -315,24 +353,18 @@ async function runSimulation() {
 }
 
 async function displayResults(data) {
-    // Metrics
     const { rt60, edt, c50 } = data.metrics;
     animateMetric('#m-rt60', rt60, 3);
     animateMetric('#m-edt', edt, 3);
     animateMetric('#m-c50', c50, 2);
 
-    // Show results strip
     $('#results-strip').classList.remove('hidden');
-
-    // Waveform
     drawWaveform(data.waveform);
 
-    // Ray visualization
     if (data.ray_paths && data.ray_paths.length > 0) {
         scene.showRays(data.ray_paths);
     }
 
-    // Audio
     try {
         currentIRBuffer = await decodeWav(data.wav_base64);
         $('#play-ir').disabled = false;
@@ -340,7 +372,6 @@ async function displayResults(data) {
         if (userAudioBuffer) $('#play-user').disabled = false;
         $('#upload-audio-label').classList.remove('disabled');
 
-        // Download link
         const blob = base64ToBlob(data.wav_base64, 'audio/wav');
         const url = URL.createObjectURL(blob);
         const dl = $('#download-ir');
@@ -357,13 +388,12 @@ function animateMetric(selector, value, decimals) {
         el.textContent = 'N/A';
         return;
     }
-    // Animate from 0 to value
     const target = parseFloat(value);
     const duration = 600;
     const start = performance.now();
     const tick = (now) => {
         const t = Math.min((now - start) / duration, 1);
-        const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
+        const ease = 1 - Math.pow(1 - t, 3);
         el.textContent = (target * ease).toFixed(decimals);
         if (t < 1) requestAnimationFrame(tick);
     };
@@ -371,20 +401,24 @@ function animateMetric(selector, value, decimals) {
 }
 
 function drawWaveform(samples) {
+    setTimeout(() => _drawWaveform(samples), 50);
+}
+
+function _drawWaveform(samples) {
     const canvas = $('#waveform');
+    const parent = canvas.parentElement;
+    const w = parent.offsetWidth;
+    const h = parent.offsetHeight;
+    if (!w || !h) {
+        setTimeout(() => _drawWaveform(samples), 100);
+        return;
+    }
+
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-
-    // Size canvas properly
-    const rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    canvas.style.width = rect.width + 'px';
-    canvas.style.height = rect.height + 'px';
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
     ctx.scale(dpr, dpr);
-
-    const w = rect.width;
-    const h = rect.height;
     const mid = h / 2;
 
     ctx.clearRect(0, 0, w, h);
@@ -394,7 +428,6 @@ function drawWaveform(samples) {
     const max = Math.max(...samples.map(Math.abs), 0.001);
     const step = w / samples.length;
 
-    // Gradient fill
     const grad = ctx.createLinearGradient(0, 0, w, 0);
     grad.addColorStop(0, 'rgba(59, 130, 246, 0.6)');
     grad.addColorStop(0.5, 'rgba(59, 130, 246, 0.3)');
@@ -407,7 +440,6 @@ function drawWaveform(samples) {
         const y = mid - (samples[i] / max) * (mid - 4);
         ctx.lineTo(x, y);
     }
-    // Mirror below
     for (let i = samples.length - 1; i >= 0; i--) {
         const x = i * step;
         const y = mid + (samples[i] / max) * (mid - 4);
@@ -417,7 +449,6 @@ function drawWaveform(samples) {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Center line
     ctx.beginPath();
     ctx.moveTo(0, mid);
     for (let i = 0; i < samples.length; i++) {

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
 const COLORS = {
     source: 0xf97316,
@@ -9,6 +10,7 @@ const COLORS = {
     ceiling: 0x27272a,
     grid: 0x27272a,
     ray: 0x3b82f6,
+    mesh: 0x6366f1,
 };
 
 const MATERIAL_COLORS = {
@@ -24,6 +26,7 @@ export class RoomScene {
         this.canvas = canvas;
         this.rayLines = [];
         this.onDrag = onDrag || null;
+        this.roomBounds = null;
         this._init();
         this._initDrag();
         this._animate = this._animate.bind(this);
@@ -143,6 +146,17 @@ export class RoomScene {
         this._mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     }
 
+    _clamp(x, y, z) {
+        const b = this.roomBounds;
+        if (!b) return [x, y, z];
+        const pad = 0.2;
+        return [
+            Math.max(b.min.x + pad, Math.min(b.max.x - pad, x)),
+            Math.max(b.min.y + pad, Math.min(b.max.y - pad, y)),
+            Math.max(b.min.z + pad, Math.min(b.max.z - pad, z)),
+        ];
+    }
+
     _onPointerDown(e) {
         this._getNDC(e);
         this._raycaster.setFromCamera(this._mouse, this.camera);
@@ -164,7 +178,6 @@ export class RoomScene {
     }
 
     _onPointerMove(e) {
-        // Hover cursor
         if (!this._dragTarget) {
             this._getNDC(e);
             this._raycaster.setFromCamera(this._mouse, this.camera);
@@ -178,8 +191,9 @@ export class RoomScene {
         if (!this._raycaster.ray.intersectPlane(this._dragPlane, this._intersection)) return;
 
         const mesh = this._dragTarget === 'source' ? this.sourceMesh : this.listenerMesh;
-        mesh.position.x = this._intersection.x;
-        mesh.position.z = this._intersection.z;
+        const [cx, , cz] = this._clamp(this._intersection.x, mesh.position.y, this._intersection.z);
+        mesh.position.x = cx;
+        mesh.position.z = cz;
 
         if (this.onDrag) {
             const p = mesh.position;
@@ -234,8 +248,18 @@ export class RoomScene {
 
         if (type === 'shoebox') {
             this._buildShoebox(dims, materials);
+            this.roomBounds = new THREE.Box3(
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(dims[0], dims[1], dims[2])
+            );
         } else if (type === 'dome') {
             this._buildDome(dims[0], materials);
+            this.roomBounds = new THREE.Box3(
+                new THREE.Vector3(-dims[0], 0, -dims[0]),
+                new THREE.Vector3(dims[0], dims[0], dims[0])
+            );
+        } else if (type === 'mesh') {
+            return; // mesh rooms set bounds via loadMesh
         }
 
         // Re-center camera target
@@ -244,10 +268,61 @@ export class RoomScene {
         const cz = type === 'dome' ? 0 : dims[2] / 2;
         this.controls.target.set(cx, cy, cz);
 
-        // Position camera based on room size
         const maxDim = Math.max(...dims);
         const dist = maxDim * 1.5;
         this.camera.position.set(cx + dist * 0.7, cy + dist * 0.5, cz + dist * 0.7);
+    }
+
+    loadMesh(objText) {
+        // Clear old room
+        while (this.roomGroup.children.length) {
+            const c = this.roomGroup.children[0];
+            c.geometry?.dispose();
+            c.material?.dispose();
+            this.roomGroup.remove(c);
+        }
+
+        const loader = new OBJLoader();
+        const obj = loader.parse(objText);
+
+        // Wireframe + translucent fill
+        obj.traverse((child) => {
+            if (child.isMesh) {
+                // Translucent fill
+                child.material = new THREE.MeshStandardMaterial({
+                    color: COLORS.mesh,
+                    transparent: true,
+                    opacity: 0.1,
+                    side: THREE.DoubleSide,
+                    roughness: 0.9,
+                });
+
+                // Wireframe overlay
+                const edges = new THREE.EdgesGeometry(child.geometry);
+                const edgeMat = new THREE.LineBasicMaterial({ color: 0x525252 });
+                const wire = new THREE.LineSegments(edges, edgeMat);
+                child.add(wire);
+            }
+        });
+
+        this.roomGroup.add(obj);
+
+        // Compute bounds
+        const box = new THREE.Box3().setFromObject(obj);
+        this.roomBounds = box;
+
+        // Center camera
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        this.controls.target.copy(center);
+        this.camera.position.set(
+            center.x + maxDim * 0.7,
+            center.y + maxDim * 0.5,
+            center.z + maxDim * 0.7
+        );
+
+        return { bounds: box, center, size };
     }
 
     _buildShoebox(dims, materials) {

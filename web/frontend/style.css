@@ -239,15 +239,23 @@ main {
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 .metric-card:hover .metric-tooltip { display: block; }
+/* Left-edge cards: anchor tooltip to card's left so it doesn't clip */
+.metric-card:first-child .metric-tooltip {
+    left: 0;
+    transform: none;
+}
 
 .waveform-card {
     flex: 1;
     min-width: 200px;
     padding: 8px 12px;
+    overflow: hidden;
 }
 .waveform-card canvas {
+    display: block;
     width: 100%;
     height: 100%;
+    max-width: 100%;
 }
 
 .audio-card {
@@ -596,6 +604,24 @@ input[type="range"]::-webkit-slider-thumb:hover {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
+}
+
+.obj-upload-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-1);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.obj-upload-label:hover {
+    border-color: var(--border-strong);
+    color: var(--text-0);
 }
 
 /* ── Utilities ────────────────────────────────────────────────── */

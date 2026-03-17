@@ -230,6 +230,7 @@ class SimRequest(BaseModel):
     absorption: float = Field(default=0.1, ge=0.0, le=1.0)
     scattering: float = Field(default=0.1, ge=0.0, le=1.0)
     materials: dict[str, str] | None = None
+    obj_data: str | None = None
     sr: int = Field(default=44100, ge=8000, le=96000)
     ir_len_ms: float = Field(default=1000.0, ge=100, le=5000)
     debug_rays: bool = False
@@ -262,8 +263,14 @@ async def simulate(req: SimRequest):
         use_mesh = False
         obj_path = os.path.join(tmp, "room.obj")
 
-        # If per-surface materials requested, generate a mesh OBJ
-        if req.materials and req.room_type == "shoebox":
+        # Custom OBJ mesh uploaded by user
+        if req.obj_data and req.room_type == "mesh":
+            with open(obj_path, "w") as f:
+                f.write(req.obj_data)
+            use_mesh = True
+            cmd += ["--room", "mesh", "--mesh", obj_path]
+        # Per-surface materials on a shoebox
+        elif req.materials and req.room_type == "shoebox":
             obj_data = _generate_shoebox_obj(req.dims)
             with open(obj_path, "w") as f:
                 f.write(obj_data)
