@@ -353,6 +353,12 @@ main {
     margin-bottom: 10px;
 }
 
+.hint {
+    font-size: 11px;
+    color: var(--text-3, #71717a);
+    margin: -4px 0 8px;
+}
+
 .divider {
     height: 1px;
     background: var(--border);

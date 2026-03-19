@@ -165,13 +165,23 @@ export class RoomScene {
 
         const hit = hits[0].object;
         this._dragTarget = hit === this._sourceHit ? 'source' : 'listener';
+        this._dragVertical = e.shiftKey;
         const mesh = this._dragTarget === 'source' ? this.sourceMesh : this.listenerMesh;
 
-        // Drag plane: horizontal (y = mesh.y), facing camera
-        this._dragPlane.setFromNormalAndCoplanarPoint(
-            new THREE.Vector3(0, 1, 0),
-            mesh.position
-        );
+        if (this._dragVertical) {
+            // Vertical drag: plane faces camera but is vertical (no Y in normal)
+            const camDir = new THREE.Vector3();
+            this.camera.getWorldDirection(camDir);
+            camDir.y = 0;
+            camDir.normalize();
+            this._dragPlane.setFromNormalAndCoplanarPoint(camDir, mesh.position);
+        } else {
+            // Horizontal drag: XZ plane at mesh height
+            this._dragPlane.setFromNormalAndCoplanarPoint(
+                new THREE.Vector3(0, 1, 0),
+                mesh.position
+            );
+        }
 
         this.controls.enabled = false;
         this.canvas.style.cursor = 'grabbing';
@@ -191,9 +201,17 @@ export class RoomScene {
         if (!this._raycaster.ray.intersectPlane(this._dragPlane, this._intersection)) return;
 
         const mesh = this._dragTarget === 'source' ? this.sourceMesh : this.listenerMesh;
-        const [cx, , cz] = this._clamp(this._intersection.x, mesh.position.y, this._intersection.z);
-        mesh.position.x = cx;
-        mesh.position.z = cz;
+
+        if (this._dragVertical) {
+            // Only update Y, keep X/Z locked
+            const [, cy] = this._clamp(mesh.position.x, this._intersection.y, mesh.position.z);
+            mesh.position.y = cy;
+        } else {
+            // Only update X/Z, keep Y locked
+            const [cx, , cz] = this._clamp(this._intersection.x, mesh.position.y, this._intersection.z);
+            mesh.position.x = cx;
+            mesh.position.z = cz;
+        }
 
         if (this.onDrag) {
             const p = mesh.position;

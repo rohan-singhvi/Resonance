@@ -1,5 +1,5 @@
-import { RoomScene } from './scene.js?v=6';
-import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js?v=6';
+import { RoomScene } from './scene.js?v=7';
+import { decodeWav, decodeAudioFile, playIR, playConvolved, playUserConvolved, stop } from './audio.js?v=7';
 
 const API_BASE = window.location.origin + '/resonance/api';
 
