@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Patches /__substrate/space/server.ts and _home.tsx with Resonance routes.
+Patches /__substrate/space/server.ts with Resonance routes and home page badge.
 Fast and idempotent — safe to run on every zo-space start via ~/.zo_secrets hook.
 """
 import os
 import sys
 
 SERVER_TS = "/__substrate/space/server.ts"
-HOME_TSX = "/__substrate/space/routes/pages/_home.tsx"
 
 # Use a raw string to avoid escape-sequence warnings
 ROUTES = r"""
@@ -39,6 +38,32 @@ app.get("/resonance/*", async (c) => {
   });
 });
 
+// Resonance: inject badge script into home page HTML
+app.use("/*", async (c, next) => {
+  await next();
+  const ct = c.res.headers.get("content-type") || "";
+  if (c.req.path !== "/" && c.req.path !== "") return;
+  if (!ct.includes("text/html")) return;
+  const html = await c.res.text();
+  if (html.includes("resonance-badge")) return;
+  const badge = `<script>
+(function(){
+  var a=document.createElement("a");
+  a.id="resonance-badge";
+  a.href="/resonance/";
+  a.textContent="Try Resonance";
+  a.style.cssText="position:fixed;bottom:20px;right:20px;background:#6366f1;color:#fff;padding:10px 18px;border-radius:8px;font-family:Inter,system-ui,sans-serif;font-size:14px;font-weight:600;text-decoration:none;z-index:9999;box-shadow:0 4px 12px rgba(99,102,241,.4);transition:transform .15s,box-shadow .15s";
+  a.onmouseenter=function(){a.style.transform="translateY(-2px)";a.style.boxShadow="0 6px 16px rgba(99,102,241,.5)"};
+  a.onmouseleave=function(){a.style.transform="";a.style.boxShadow="0 4px 12px rgba(99,102,241,.4)"};
+  document.body.appendChild(a);
+})();
+</script>`;
+  c.res = new Response(html.replace("</body>", badge + "</body>"), {
+    status: c.res.status,
+    headers: c.res.headers,
+  });
+});
+
 """
 
 MARKER = 'app.get("/api/_health"'
@@ -50,8 +75,16 @@ def patch_server_ts():
         return
     with open(SERVER_TS) as f:
         content = f.read()
-    if "/resonance/api" in content:
+    if "/resonance/api" in content and "resonance-badge" in content:
         return  # already patched, fast path
+    # Strip old partial patch if badge is missing
+    if "/resonance/api" in content and "resonance-badge" not in content:
+        # Remove old patch block so we can re-insert the full one
+        idx = content.find("// Resonance: proxy API calls")
+        if idx != -1:
+            end_idx = content.find(MARKER, idx)
+            if end_idx != -1:
+                content = content[:idx] + content[end_idx:]
     if MARKER not in content:
         print("server.ts: health endpoint marker not found")
         return
@@ -61,28 +94,8 @@ def patch_server_ts():
     print("server.ts patched")
 
 
-def patch_home_tsx():
-    if not os.path.isfile(HOME_TSX):
-        print("_home.tsx not found, skipping")
-        return
-    with open(HOME_TSX) as f:
-        content = f.read()
-    old = 'href="https://github.com/rohan-singhvi/Resonance"'
-    new = 'href="/resonance/"'
-    if old not in content:
-        return  # already patched or different format, fast path
-    content = content.replace(old, new)
-    with open(HOME_TSX, "w") as f:
-        f.write(content)
-    print("_home.tsx patched")
-
-
 if __name__ == "__main__":
     try:
         patch_server_ts()
     except Exception as e:
         print(f"server.ts error: {e}", file=sys.stderr)
-    try:
-        patch_home_tsx()
-    except Exception as e:
-        print(f"_home.tsx error: {e}", file=sys.stderr)
